@@ -5,6 +5,7 @@
 #include "TextureToolkitUI.h"
 #include "Config.h"
 #include "Logger.h"
+#include <atomic>
 #include <imgui.h>
 #include "imgui_impl_win32.h"
 #include "imgui_impl_dx9.h"
@@ -19,7 +20,6 @@ namespace TextureToolkit
     {
         if (TextureToolkitUI::is_visible())
         {
-            extern bool g_inside_imgui_render;
             g_inside_imgui_render = true;
             ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);
             g_inside_imgui_render = false;
@@ -271,7 +271,6 @@ namespace TextureToolkit
 
         TextureManager::get().on_frame();
 
-        extern bool g_inside_imgui_render;
         g_inside_imgui_render = true;
 
         ImGuiIO &io = ImGui::GetIO();

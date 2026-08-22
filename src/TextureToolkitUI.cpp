@@ -73,11 +73,13 @@ namespace TextureToolkit
     static const ImVec4 kColDumped(0.35f, 0.70f, 1.00f, 1.0f);
     static const ImVec4 kColOriginal(0.70f, 0.70f, 0.70f, 1.0f);
     static const ImVec4 kColMuted(0.60f, 0.60f, 0.62f, 1.0f);
+    static const ImVec4 kColPending(0.95f, 0.80f, 0.25f, 1.0f);
 
     static const ImVec4 &status_color(TextureStatus s)
     {
         if (s == TextureStatus::INJECTED) return kColInjected;
         if (s == TextureStatus::DUMPED)   return kColDumped;
+        if (s == TextureStatus::PENDING)  return kColPending;
         return kColOriginal;
     }
 
@@ -85,6 +87,7 @@ namespace TextureToolkit
     {
         if (s == TextureStatus::INJECTED) return "Injected";
         if (s == TextureStatus::DUMPED)   return "Dumped";
+        if (s == TextureStatus::PENDING)  return "Pending";
         return "Original";
     }
 
@@ -327,11 +330,12 @@ namespace TextureToolkit
 
         // Counts and total memory.
         std::vector<TextureDetails> textures = tm.get_active_textures();
-        size_t injected = 0, dumped = 0, original = 0;
+        size_t injected = 0, dumped = 0, original = 0, pending = 0;
         uint64_t total_bytes = 0;
         for (const auto &t : textures)
         {
             if (t.status == TextureStatus::INJECTED) injected++;
+            else if (t.status == TextureStatus::PENDING) pending++;
             else if (t.status == TextureStatus::DUMPED) dumped++;
             else original++;
             total_bytes += t.data_size;
@@ -340,6 +344,13 @@ namespace TextureToolkit
         ImGui::Text("%zu tracked", textures.size());
         ImGui::SameLine();
         ImGui::TextColored(kColInjected, "  %zu injected", injected);
+        if (pending > 0)
+        {
+            ImGui::SameLine();
+            ImGui::TextColored(kColPending, "  %zu pending", pending);
+            ImGui::SetItemTooltip("An inject file exists for these, but no replacement is bound yet. "
+                                  "If it stays pending, the file was rejected - check the log.");
+        }
         ImGui::SameLine();
         ImGui::TextColored(kColDumped, "  %zu dumped", dumped);
         ImGui::SameLine();

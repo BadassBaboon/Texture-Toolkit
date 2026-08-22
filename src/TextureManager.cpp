@@ -179,6 +179,58 @@ namespace TextureToolkit
         out.push_back(std::move(buf));
     }
 
+    // Bytes per pixel for uncompressed D3D9 formats. Returns 0 for anything we do not positively
+    // recognise, and the caller then SKIPS the texture instead of guessing.
+    //
+    // This used to default to 4. That was both a correctness bug and a memory-safety one: for a
+    // 1- or 2-byte format (A8L8, A4L4, R3G3B2, X4R4G4B4, V8U8, R16F...) the computed row is 2-4x
+    // the real row, so hashing walked off the end of the locked buffer. It also means the set of
+    // formats we recognise is part of the compatibility contract: adding a format here later only
+    // makes NEW textures moddable, it never changes a hash that already exists.
+    static UINT d3d9_bytes_per_pixel(D3DFORMAT format)
+    {
+        switch (static_cast<uint32_t>(format))
+        {
+        case D3DFMT_R8G8B8:            return 3;
+        case D3DFMT_A8R8G8B8:
+        case D3DFMT_X8R8G8B8:
+        case D3DFMT_A2B10G10R10:
+        case D3DFMT_A8B8G8R8:
+        case D3DFMT_X8B8G8R8:
+        case D3DFMT_G16R16:
+        case D3DFMT_A2R10G10B10:
+        case D3DFMT_X8L8V8U8:
+        case D3DFMT_Q8W8V8U8:
+        case D3DFMT_V16U16:
+        case D3DFMT_A2W10V10U10:
+        case D3DFMT_G16R16F:
+        case D3DFMT_R32F:              return 4;
+        case D3DFMT_R5G6B5:
+        case D3DFMT_X1R5G5B5:
+        case D3DFMT_A1R5G5B5:
+        case D3DFMT_A4R4G4B4:
+        case D3DFMT_A8R3G3B2:
+        case D3DFMT_X4R4G4B4:
+        case D3DFMT_A8P8:
+        case D3DFMT_A8L8:
+        case D3DFMT_V8U8:
+        case D3DFMT_L6V5U5:
+        case D3DFMT_L16:
+        case D3DFMT_R16F:
+        case D3DFMT_CxV8U8:            return 2;
+        case D3DFMT_R3G3B2:
+        case D3DFMT_A8:
+        case D3DFMT_P8:
+        case D3DFMT_L8:
+        case D3DFMT_A4L4:              return 1;
+        case D3DFMT_A16B16G16R16:
+        case D3DFMT_A16B16G16R16F:
+        case D3DFMT_G32R32F:           return 8;
+        case D3DFMT_A32B32G32R32F:     return 16;
+        default:                       return 0; // unknown: do not guess
+        }
+    }
+
     static uint64_t calculate_d3d9_pixel_hash(const void *pixel_data, UINT width, UINT height, D3DFORMAT format, UINT pitch)
     {
         if (pixel_data == nullptr || width == 0 || height == 0)
@@ -188,22 +240,34 @@ namespace TextureToolkit
 
         // Hash tight rows only, so the lock pitch the driver happened to hand us never reaches
         // the hash (see TextureHash.h). Block-compressed formats step a row of 4-pixel blocks.
-        if (format == D3DFMT_DXT1 || format == D3DFMT_DXT2 || format == D3DFMT_DXT3 || format == D3DFMT_DXT4 || format == D3DFMT_DXT5)
+        const uint32_t fmt4cc = static_cast<uint32_t>(format);
+        const bool is_bc = (format == D3DFMT_DXT1 || format == D3DFMT_DXT2 || format == D3DFMT_DXT3 ||
+                            format == D3DFMT_DXT4 || format == D3DFMT_DXT5 ||
+                            fmt4cc == MAKEFOURCC('A','T','I','1') || fmt4cc == MAKEFOURCC('B','C','4','U') ||
+                            fmt4cc == MAKEFOURCC('A','T','I','2') || fmt4cc == MAKEFOURCC('B','C','5','U'));
+        if (is_bc)
         {
-            const UINT block_size = (format == D3DFMT_DXT1) ? 8 : 16;
+            // 8 bytes per 4x4 block for the one-channel/1-bit-alpha formats, 16 for the rest.
+            const bool small_block = (format == D3DFMT_DXT1 ||
+                                      fmt4cc == MAKEFOURCC('A','T','I','1') || fmt4cc == MAKEFOURCC('B','C','4','U'));
+            const UINT block_size = small_block ? 8 : 16;
             const UINT tight_row = ((width + 3) / 4) * block_size;
             const UINT rows = (height + 3) / 4;
             return compute_hash64_rows(src, pitch, tight_row, rows);
         }
 
-        UINT bpp = 4; // Default 32-bit RGBA/ARGB
-        if (format == D3DFMT_R5G6B5 || format == D3DFMT_X1R5G5B5 || format == D3DFMT_A1R5G5B5 || format == D3DFMT_A4R4G4B4 || format == D3DFMT_L16)
+        const UINT bpp = d3d9_bytes_per_pixel(format);
+        if (bpp == 0)
         {
-            bpp = 2;
-        }
-        else if (format == D3DFMT_L8 || format == D3DFMT_A8 || format == D3DFMT_P8)
-        {
-            bpp = 1;
+            static int s_logged_unknown = 0;
+            if (s_logged_unknown < 8)
+            {
+                ++s_logged_unknown;
+                Logger::get().warn("[TextureManager] Skipping D3D9 texture in unrecognised format " +
+                                   std::to_string(static_cast<uint32_t>(format)) +
+                                   "; its pixel layout is unknown, so it cannot be hashed safely.");
+            }
+            return 0;
         }
 
         return compute_hash64_rows(src, pitch, width * bpp, height);
@@ -1351,10 +1415,14 @@ namespace TextureToolkit
 
         for (auto &pair : m_tracked_textures)
         {
-            if (m_injected_files.find(pair.first) != m_injected_files.end() || pair.second.replacement_handle != 0)
-            {
+            // Report what is actually happening on screen. Saying "Injected" merely because a
+            // file exists hid a real bug: two mipmapped textures showed as injected for weeks
+            // while their replacement was built and never bound. A file that is present but not
+            // applied is PENDING, which is a question the user can act on.
+            if (pair.second.replacement_handle != 0)
                 pair.second.status = TextureStatus::INJECTED;
-            }
+            else if (m_injected_files.find(pair.first) != m_injected_files.end())
+                pair.second.status = TextureStatus::PENDING;
 
             if (show_current_frame_only)
             {

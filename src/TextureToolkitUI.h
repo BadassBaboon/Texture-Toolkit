@@ -1,11 +1,13 @@
 #pragma once
 
+#include <atomic>
+
 #include <string>
 #include <windows.h>
 
 namespace TextureToolkit
 {
-    extern bool g_inside_imgui_render;
+    extern std::atomic<bool> g_inside_imgui_render;
 
     class TextureToolkitUI
     {

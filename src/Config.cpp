@@ -41,10 +41,21 @@ namespace TextureToolkit
             m_config.hotkey = VK_INSERT;
         }
 
+        // A hotkey of 0 (or anything outside the virtual-key range) can never be pressed, which
+        // would leave the panel unopenable with no clue why. Fall back and say so.
+        if (m_config.hotkey == 0 || m_config.hotkey > 0xFE)
+        {
+            Logger::get().warn("[ConfigManager] HotKey=" + std::to_string(m_config.hotkey) +
+                               " is not a usable virtual-key code; falling back to INSERT (0x2D).");
+            m_config.hotkey = VK_INSERT;
+        }
+
         // Resource root: holds dump/, inject/, and imgui.ini.
         wchar_t root_str[MAX_PATH] = L"";
         GetPrivateProfileStringW(L"TextureToolkit", L"ResourceRoot", L"TT", root_str, MAX_PATH, ini_w);
         m_config.resource_root = root_str;
+        if (m_config.resource_root.empty())
+            m_config.resource_root = "TT"; // an empty root would scatter dump/inject into the game folder
 
         // Toggles
         m_config.enable_injection = GetPrivateProfileIntW(L"TextureToolkit", L"EnableInjection", 1, ini_w) != 0;

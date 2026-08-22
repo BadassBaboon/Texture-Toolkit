@@ -4,6 +4,7 @@
 #include "TextureToolkitUI.h"
 #include "Config.h"
 #include "Logger.h"
+#include <atomic>
 #include <intrin.h>
 #include "imgui.h"
 #include "imgui_impl_win32.h"
@@ -14,7 +15,10 @@ extern HMODULE g_our_module;
 
 namespace TextureToolkit
 {
-    bool g_inside_imgui_render = false;
+    // Gates the hooked GetAsyncKeyState/GetKeyState so our own polling sees real key state while
+    // the game's does not. Read and written from the render thread and from whatever thread the
+    // game polls input on, so it must be atomic rather than a plain bool.
+    std::atomic<bool> g_inside_imgui_render{false};
     DInput8Hook &DInput8Hook::get()
     {
         static DInput8Hook instance;
@@ -299,7 +303,6 @@ namespace TextureToolkit
 
     SHORT WINAPI DInput8Hook::Hooked_GetAsyncKeyState(int vKey)
     {
-        extern bool g_inside_imgui_render;
         if (TextureToolkitUI::is_visible() && !g_inside_imgui_render)
         {
             if (vKey != static_cast<int>(ConfigManager::get().get_config().hotkey))
@@ -312,7 +315,6 @@ namespace TextureToolkit
 
     SHORT WINAPI DInput8Hook::Hooked_GetKeyState(int vKey)
     {
-        extern bool g_inside_imgui_render;
         if (TextureToolkitUI::is_visible() && !g_inside_imgui_render)
         {
             if (vKey != static_cast<int>(ConfigManager::get().get_config().hotkey))
@@ -326,7 +328,6 @@ namespace TextureToolkit
     BOOL WINAPI DInput8Hook::Hooked_GetKeyboardState(PBYTE lpKeyState)
     {
         BOOL ret = get().m_orig_get_keyboard_state(lpKeyState);
-        extern bool g_inside_imgui_render;
         if (ret && TextureToolkitUI::is_visible() && !g_inside_imgui_render)
         {
             int toggle_key = static_cast<int>(ConfigManager::get().get_config().hotkey);
@@ -347,7 +348,6 @@ namespace TextureToolkit
         if ((lpMsg->message >= WM_KEYFIRST && lpMsg->message <= WM_KEYLAST) ||
             (lpMsg->message >= WM_MOUSEFIRST && lpMsg->message <= WM_MOUSELAST))
         {
-            extern bool g_inside_imgui_render;
             g_inside_imgui_render = true;
             ImGui_ImplWin32_WndProcHandler(lpMsg->hwnd, lpMsg->message, lpMsg->wParam, lpMsg->lParam);
             g_inside_imgui_render = false;

@@ -16,8 +16,9 @@ namespace TextureToolkit
     enum class TextureStatus
     {
         ORIGINAL = 0,
-        INJECTED = 1,
-        DUMPED = 2
+        INJECTED = 1,   // a replacement is built AND bound in place of the original
+        DUMPED = 2,
+        PENDING = 3     // an inject file exists for this hash but is not applied (yet, or at all)
     };
 
     struct TextureDetails

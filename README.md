@@ -24,7 +24,7 @@ Storing the hash on the resource, instead of tracking raw pointers, keeps a repl
 
 ## The in-game panel
 
-Press `INSERT` to open it. The left pane lists tracked textures with hash, size, mip count, format, and status (original, dumped, or injected). The filter box matches on hash, dimensions, or format. Hover the list and press `[` or `]` to step through it.
+Press `INSERT` to open it. The left pane lists tracked textures with hash, size, mip count, format, and status: injected (a replacement is bound), pending (an inject file exists but nothing is bound yet), dumped, or original. The filter box matches on hash, dimensions, or format. Hover the list and press `[` or `]` to step through it.
 
 The right pane inspects the selected texture. The preview shows the injected replacement, the live original while it is on screen, or the dumped `.dds` read back from disk. Below it are the dimensions, mip count, data size, format, the compressed and sRGB flags, and the D3D11 bind, usage, and misc flags. You can copy the hash or dump the texture from here, and drag the divider to resize the two panes.
 
@@ -86,6 +86,40 @@ Verbose=0
 - `Verbose`: write per-texture debug lines to the log; leave off for normal use, since it slows the game.
 
 Toggling a checkbox in the panel writes its new value back to this file.
+
+## Sharing a texture mod
+
+A texture is identified by a 64-bit hash of its original pixel data, so an `inject` folder works
+on anyone else's copy of the same game. To publish a mod, ship the `.dds` files and tell people to
+drop them in `TT/inject` with Texture Toolkit installed.
+
+Two things decide whether a hash matches on someone else's machine:
+
+- **Game version.** A patch that reships texture assets changes their contents, and therefore their
+  hashes. State the version you built against.
+- **Texture quality settings.** Some games upload a smaller top mip at lower settings, which is
+  different pixel data and a different hash. State the setting you authored at.
+
+Neither depends on the player's GPU or driver: the hash covers the texture's tightly-packed rows,
+never the driver's row padding, so it means the same thing on every machine.
+
+Export replacements **with a full mip chain**. A block-compressed replacement without mips cannot
+have its mips regenerated, so it samples its top level at every distance and shimmers in motion --
+and a higher-resolution replacement aliases *more* than the original did, not less. Mips cost about
+a third more VRAM. Dumps are written with their full chain, so an edited dump is already correct.
+
+## Compatibility
+
+These are fixed. Changing any of them would rename every file in every published mod, so they are
+treated as a contract rather than an implementation detail:
+
+- The hash: 64-bit, computed over mip 0's tightly-packed rows, with the algorithm in `TextureHash.h`.
+- The filename: 16 uppercase hex digits plus `.dds`. A `0x` prefix is also accepted.
+- The layout: `<ResourceRoot>/inject` and `<ResourceRoot>/dump`.
+
+The set of pixel formats Texture Toolkit recognises is deliberately **additive**. A format it cannot
+positively identify is skipped rather than guessed at, so adding support for one later can only make
+new textures moddable -- it can never change a hash that already exists.
 
 ## Limitations
 

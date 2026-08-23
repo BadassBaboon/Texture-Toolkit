@@ -1,0 +1,70 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86
+            platform: Win32
+          - arch: x64
+            platform: x64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Dear ImGui and MinHook are fetched at configure time and pinned by tag, so caching them
+      # keeps a normal push from re-cloning both every run.
+      - name: Cache fetched dependencies
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: deps-${{ matrix.arch }}-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Configure
+        run: cmake -B build -A ${{ matrix.platform }}
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TextureToolkit-${{ matrix.arch }}
+          path: build/Release/TextureToolkit-${{ matrix.arch }}.asi
+          if-no-files-found: error
+
+  release:
+    # A tag publishes exactly what the matrix above produced, so the release carries the binaries
+    # CI built and not something assembled by hand on a developer machine.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: TextureToolkit-*
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: TextureToolkit-*.asi
+          generate_release_notes: true
+          # Published as a draft so the changelog section for this version can be pasted in and
+          # the binaries smoke-tested before anyone downloads them.
+          draft: true

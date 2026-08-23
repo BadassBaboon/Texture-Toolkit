@@ -1,6 +1,6 @@
 #pragma once
 
-#include <reshade.hpp>
+#include "TextureFormat.h"
 #include <vector>
 #include <string>
 #include <cstdint>

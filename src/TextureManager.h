@@ -188,7 +188,14 @@ namespace TextureToolkit
         std::unordered_map<uint64_t, IDirect3DBaseTexture9 *> m_d3d9_replacements;
         std::unordered_map<uint64_t, ID3D11ShaderResourceView *> m_d3d11_replacements;
 
-        void release_replacements();
+        // `defer` moves the COM references onto m_retired_replacements instead of releasing them
+        // straight away. The bind fast path reads a cached replacement pointer without the lock, so
+        // releasing under the lock can still free a view a render thread is about to hand the game.
+        // Retired views are dropped a couple of frames later, once no bind can still be holding one.
+        void release_replacements(bool defer = false);
+        std::vector<IUnknown *> m_retired_replacements;
+        uint64_t m_retire_after_frame = 0;
+        void drain_retired_replacements();
 
         // Replacement construction. Split out of the register_unmap_* paths so a replacement can
         // also be built later, when a DDS is added while the game is running (the texture is never

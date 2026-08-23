@@ -134,6 +134,27 @@ namespace TextureToolkit
         uint32_t slice_pitch = 0;
     };
 
+    // How many mip levels the replacement should be created with.
+    //
+    // A file that ships more than one level is taken at its word. Mip count is an authoring
+    // decision, not a defect to be corrected: a UI texture drawn at 1:1 never samples below level 0
+    // and pays VRAM for every level it carries, and an author who stopped a 2K texture's chain
+    // early did so knowing what it costs. Clamping that to the original's level count -- which is a
+    // property of the art we are replacing, not of the replacement -- would silently discard the
+    // author's choice, and silently discarding it is worse than any chain they might have picked.
+    //
+    // A single-level file is the ambiguous case: it is equally what you get from an author who
+    // meant it and from one who forgot the checkbox. Only there do we fill the chain in, and only
+    // for uncompressed formats, where downsampling the source is lossless enough to be worth doing.
+    // Missing levels cannot be recovered from block-compressed data at all.
+    static uint32_t choose_replacement_levels(const DDSImage &dds, uint32_t original_levels)
+    {
+        if (dds.mip_levels > 1)
+            return dds.mip_levels;
+
+        return (original_levels == 1) ? 1u : full_mip_count(dds.width, dds.height);
+    }
+
     // Resolve levels [0, target_levels) for a replacement of dds.width x dds.height.
     // Uses DDS subresources where present; auto-generates the rest for uncompressed
     // formats. For compressed formats missing a level, the chain stops early (a shorter
@@ -468,7 +489,11 @@ namespace TextureToolkit
         }
 
         std::lock_guard<std::mutex> lock(m_mutex);
+        m_bind_generation.fetch_add(1, std::memory_order_relaxed);
         release_replacements();
+        for (IUnknown *p : m_retired_replacements)
+            p->Release();
+        m_retired_replacements.clear();
         release_preview();
 
         for (auto &rb : m_readback_queue)
@@ -635,21 +660,44 @@ namespace TextureToolkit
 
     // Releases the COM reference we hold for every stored replacement. Caller MUST
     // already hold m_mutex (the mutex is non-recursive).
-    void TextureManager::release_replacements()
+    void TextureManager::release_replacements(bool defer)
     {
         for (auto &p : m_d3d9_replacements)
         {
-            if (p.second != nullptr)
+            if (p.second == nullptr)
+                continue;
+            if (defer)
+                m_retired_replacements.push_back(p.second);
+            else
                 p.second->Release();
         }
         m_d3d9_replacements.clear();
 
         for (auto &p : m_d3d11_replacements)
         {
-            if (p.second != nullptr)
+            if (p.second == nullptr)
+                continue;
+            if (defer)
+                m_retired_replacements.push_back(p.second);
+            else
                 p.second->Release();
         }
         m_d3d11_replacements.clear();
+
+        if (defer)
+            m_retire_after_frame = m_frame_count + 2;
+    }
+
+    // Caller MUST hold m_mutex.
+    void TextureManager::drain_retired_replacements()
+    {
+        if (m_retired_replacements.empty() || m_frame_count < m_retire_after_frame)
+            return;
+
+        for (IUnknown *p : m_retired_replacements)
+            p->Release();
+        m_retired_replacements.clear();
+        m_retire_after_frame = 0;
     }
 
     // Caller MUST hold m_mutex.
@@ -689,6 +737,7 @@ namespace TextureToolkit
             evict_stale_textures(now_ticks);
         }
 
+        drain_retired_replacements();
         process_pending_injections();
         process_readback_queue();
     }
@@ -706,9 +755,16 @@ namespace TextureToolkit
         {
             const TextureDetails &d = it->second;
             const bool stale = d.last_seen_ticks + kEvictAgeMs < now_ticks;
+            // A texture with an inject file waiting for it stays in the list under either naming;
+            // dropping the SK-named ones would make an SK pack's pending entries disappear.
+            const bool has_inject_file =
+                m_injected_files.find(it->first) != m_injected_files.end() ||
+                (accept_sk_names && d.sk_hash != 0 &&
+                 m_sk_injected_files.find(d.sk_hash) != m_sk_injected_files.end());
+
             const bool keep = d.replacement_handle != 0 ||
                               it->first == m_preview_target_hash ||
-                              m_injected_files.find(it->first) != m_injected_files.end();
+                              has_inject_file;
 
             if (stale && !keep)
                 it = m_tracked_textures.erase(it);
@@ -789,7 +845,13 @@ namespace TextureToolkit
 
         {
             std::lock_guard<std::mutex> lock(m_mutex);
-            release_replacements();
+
+            // Bump first: a bind that has already passed the generation check must not go on to
+            // read a pointer we are about to drop. Raising it here sends every later bind down the
+            // slow path, which takes this lock and so waits for the swap below to finish.
+            m_bind_generation.fetch_add(1, std::memory_order_relaxed);
+            release_replacements(true);
+
             m_injected_files.swap(found);
             m_sk_injected_files.swap(found_sk);
             m_failed_injections.clear(); // retry files that were bad last time; they may be fixed now
@@ -807,9 +869,6 @@ namespace TextureToolkit
                 if (pair.second.status == TextureStatus::INJECTED)
                     pair.second.status = TextureStatus::ORIGINAL;
             }
-
-            // Every cached bind decision refers to replacements that were just released.
-            m_bind_generation.fetch_add(1, std::memory_order_relaxed);
 
             Logger::get().info("[TextureManager] Scanned " + std::to_string(m_injected_files.size()) + " DDS replacement file(s) in TT/inject.");
             if (!m_sk_injected_files.empty())
@@ -1148,7 +1207,7 @@ namespace TextureToolkit
                 {
                     // Match the original's mip topology: single level stays single,
                     // a mipmapped original gets a full chain (auto-generated as needed).
-                    uint32_t target_levels = (original_levels <= 1) ? 1u : full_mip_count(dds.width, dds.height);
+                    uint32_t target_levels = choose_replacement_levels(dds, (original_levels == 0) ? 1u : original_levels);
                     std::vector<MipLevel> mips = build_replacement_mips(dds, target_levels);
 
                     if (mips.empty())
@@ -1157,12 +1216,11 @@ namespace TextureToolkit
                     }
                     else
                     {
-                        // Warn only when the replacement has fewer levels than the ORIGINAL did.
-                        // Games commonly stop their chain at 4x4, so comparing against a
-                        // theoretical full chain would flag our own dumps as defective.
-                        if (original_levels > 1 && mips.size() < original_levels)
+                        // Only the single-level case is worth a warning. A shorter chain that the
+                        // author actually authored is a choice, and is applied without comment.
+                        if (original_levels > 1 && mips.size() == 1)
                         {
-                            Logger::get().warn("[TextureManager] Injected DDS 0x" + format_hash_hex(hash) + " is missing mip levels (" + std::to_string(mips.size()) + "/" + std::to_string(original_levels) + "). Compressed replacements must ship a full mip chain; re-export with mipmaps to avoid shimmering at distance.");
+                            Logger::get().warn("[TextureManager] Injected DDS 0x" + format_hash_hex(hash) + " has a single mip level, replacing a texture that had " + std::to_string(original_levels) + ". Mips cannot be generated from block-compressed data, so it samples level 0 at every distance and will shimmer in motion. Re-export with mipmaps if that was not intended.");
                         }
 
                         IDirect3DTexture9 *highres_tex = nullptr;
@@ -1524,7 +1582,7 @@ namespace TextureToolkit
             {
                 // Single-level originals stay single-level; mipmapped originals
                 // (or runtime-generated full chains, MipLevels == 0) get a full chain.
-                uint32_t target_levels = (original_levels == 1) ? 1u : full_mip_count(dds.width, dds.height);
+                uint32_t target_levels = choose_replacement_levels(dds, original_levels);
                 std::vector<MipLevel> mips = build_replacement_mips(dds, target_levels);
 
                 if (mips.empty())
@@ -1538,9 +1596,11 @@ namespace TextureToolkit
                     const size_t orig_effective_levels = (original_levels == 0)
                         ? full_mip_count(details.width, details.height)
                         : original_levels;
-                    if (orig_effective_levels > 1 && mips.size() < orig_effective_levels)
+                    // Only the single-level case is worth a warning. A shorter chain that the
+                    // author actually authored is a choice, and is applied without comment.
+                    if (orig_effective_levels > 1 && mips.size() == 1)
                     {
-                        Logger::get().warn("[TextureManager] Injected DDS 0x" + format_hash_hex(hash) + " is missing mip levels (" + std::to_string(mips.size()) + "/" + std::to_string(orig_effective_levels) + "). Compressed replacements must ship a full mip chain; re-export with mipmaps to avoid shimmering at distance.");
+                        Logger::get().warn("[TextureManager] Injected DDS 0x" + format_hash_hex(hash) + " has a single mip level, replacing a texture that had " + std::to_string(orig_effective_levels) + ". Mips cannot be generated from block-compressed data, so it samples level 0 at every distance and will shimmer in motion. Re-export with mipmaps if that was not intended.");
                     }
 
                     // Use a concrete (non-TYPELESS) format so the SRV is valid.

@@ -38,4 +38,14 @@ namespace TextureToolkit
 
     // Formats a hash as the 16-character hex string used for dump/inject filenames.
     std::string format_hash_hex(uint64_t hash);
+
+    // CRC-32C (Castagnoli) over the same tight rows, for reading texture packs named the way
+    // Special K names them. This is NOT our identity -- it is a second key we also accept, so an
+    // SK pack drops into inject/ and works. SK seeds with 0 and accumulates across mip levels,
+    // snapshotting after level 0; that snapshot is the value its filenames carry, so mip 0 alone
+    // reproduces it.
+    uint32_t compute_crc32c_rows(const uint8_t *data, uint32_t src_pitch, uint32_t tight_row, uint32_t rows);
+
+    // 8-character hex, the width Special K uses.
+    std::string format_sk_hash_hex(uint32_t hash);
 }

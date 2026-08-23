@@ -83,9 +83,13 @@ namespace TextureToolkit
         return kColOriginal;
     }
 
-    static const char *status_label(TextureStatus s)
+    // Takes the texture rather than the bare status, so an SK-named replacement can say so: that
+    // is the difference between "my file loaded" and "the Special K pack I dropped in loaded".
+    static const char *status_label(const TextureDetails &tex)
     {
-        if (s == TextureStatus::INJECTED) return "Injected";
+        if (tex.status == TextureStatus::INJECTED)
+            return tex.injected_via_sk_name ? "SK Injected" : "Injected";
+        const TextureStatus s = tex.status;
         if (s == TextureStatus::DUMPED)   return "Dumped";
         if (s == TextureStatus::PENDING)  return "Pending";
         return "Original";
@@ -238,7 +242,7 @@ namespace TextureToolkit
             ImGui::TableSetColumnIndex(0);
             ImGui::TextColored(kColMuted, "Status");
             ImGui::TableSetColumnIndex(1);
-            ImGui::TextColored(status_color(tex.status), "%s", status_label(tex.status));
+            ImGui::TextColored(status_color(tex.status), "%s", status_label(tex));
 
             ImGui::EndTable();
         }
@@ -296,6 +300,10 @@ namespace TextureToolkit
         ImGui::SameLine();
         changed |= ImGui::Checkbox("Scene only", &tm.show_current_frame_only);
         ImGui::SetItemTooltip("Show only textures drawn in the current scene.");
+        ImGui::SameLine();
+        changed |= ImGui::Checkbox("SK names", &tm.accept_sk_names);
+        ImGui::SetItemTooltip("Also load texture packs named the way Special K names them "
+                              "(8 hex digits, the CRC-32C of the top mip). These show as SK Injected.");
         if (changed)
         {
             Configuration &cfg = ConfigManager::get().get_config();
@@ -303,6 +311,7 @@ namespace TextureToolkit
             cfg.auto_dump = tm.auto_dump;
             cfg.filter_small_textures = tm.filter_small_textures;
             cfg.show_current_frame_only = tm.show_current_frame_only;
+            cfg.accept_sk_names = tm.accept_sk_names;
             ConfigManager::get().save();
         }
 
@@ -463,7 +472,7 @@ namespace TextureToolkit
                                                                    : tex.format_short.c_str() + us + 1);
 
                     ImGui::TableSetColumnIndex(4);
-                    ImGui::TextColored(status_color(tex.status), "%s", status_label(tex.status));
+                    ImGui::TextColored(status_color(tex.status), "%s", status_label(tex));
                 }
                 ImGui::EndTable();
             }

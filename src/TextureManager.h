@@ -9,6 +9,7 @@
 #include <unordered_set>
 #include <mutex>
 #include <filesystem>
+#include <atomic>
 #include "TextureHash.h"
 
 namespace TextureToolkit
@@ -25,6 +26,11 @@ namespace TextureToolkit
     {
         uint64_t hash = 0;
         std::string hash_hex;
+
+        // Special K's name for the same texture (CRC-32C of mip 0). Kept so an SK-named pack can
+        // be matched, and so the panel can say which naming a replacement came from.
+        uint32_t sk_hash = 0;
+        bool injected_via_sk_name = false;
 
         uint32_t width = 0;          // original game-texture dimensions
         uint32_t height = 0;
@@ -81,6 +87,7 @@ namespace TextureToolkit
         bool enable_injection = true;
         bool filter_small_textures = true;
         bool show_current_frame_only = false;
+        bool accept_sk_names = true;   // also resolve Special K-named files in inject/
 
         // Active Texture Queries
         std::vector<TextureDetails> get_active_textures();
@@ -120,6 +127,9 @@ namespace TextureToolkit
 
         // Virtual Replacements for DX11
         ID3D11ShaderResourceView *get_replacement_srv11(ID3D11ShaderResourceView *orig);
+    private:
+        ID3D11ShaderResourceView *resolve_srv11_slow(ID3D11ShaderResourceView *orig, uint32_t generation, uint64_t frame);
+    public:
         // initial_levels/initial_level_count are the CreateTexture2D initial-data array when the
         // game supplied one. That is the only moment the whole mip chain is visible at once, so it
         // is the only path where auto-dump can capture more than the top level.
@@ -149,12 +159,25 @@ namespace TextureToolkit
 
         mutable std::mutex m_mutex;
         uint64_t m_frame_count = 0;
+
+        // Read by the bind hook without the lock (see get_replacement_srv11's fast path).
+        std::atomic<uint64_t> m_frame_count_atomic{0};
+
+        // Bumped whenever a cached bind decision could have gone stale: the inject folder was
+        // rescanned, a replacement was built, the preview selection moved, or a bulk dump was
+        // queued. A cache entry from an older generation is simply ignored and rebuilt.
+        std::atomic<uint32_t> m_bind_generation{1};
+
+        // Hashes seen this frame, buffered per thread so the bind hook does not take the manager
+        // lock for every bound texture; merged under the lock on flush and in on_frame.
+        void flush_seen_locked();
         uint64_t m_next_eviction_ticks = 0;
 
         // Active-scene tracking is keyed by content hash (immune to driver pointer reuse).
         std::unordered_set<uint64_t> m_current_frame_hashes;
         std::unordered_set<uint64_t> m_active_frame_hashes;
         std::unordered_map<uint64_t, std::filesystem::path> m_injected_files;
+        std::unordered_map<uint32_t, std::filesystem::path> m_sk_injected_files; // Special K naming
         std::unordered_map<uint64_t, TextureDetails> m_tracked_textures;
 
         // Replacement maps are keyed by content hash, not by raw resource pointer.
@@ -241,6 +264,8 @@ namespace TextureToolkit
         // long session. Caller MUST hold m_mutex.
         void evict_stale_textures(uint64_t now_ticks);
 
-        std::filesystem::path find_injection_path(uint64_t hash);
+        // Resolves the file for a hash: our own 16-hex name first, then Special K's 8-hex top-CRC
+        // name when AcceptSpecialKNames is on. via_sk_name reports which naming matched.
+        std::filesystem::path find_injection_path(uint64_t hash, uint32_t sk_hash = 0, bool *via_sk_name = nullptr);
     };
 }

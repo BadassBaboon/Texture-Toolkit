@@ -115,6 +115,57 @@ namespace TextureToolkit
         return h.finish();
     }
 
+    namespace
+    {
+        // Reflected CRC-32C polynomial, the one the SSE4.2 crc32 instruction implements.
+        struct Crc32cTable
+        {
+            uint32_t v[256];
+            constexpr Crc32cTable() : v()
+            {
+                for (uint32_t i = 0; i < 256; ++i)
+                {
+                    uint32_t c = i;
+                    for (int k = 0; k < 8; ++k)
+                        c = (c & 1u) ? (0x82F63B78u ^ (c >> 1)) : (c >> 1);
+                    v[i] = c;
+                }
+            }
+        };
+        constexpr Crc32cTable kCrc32c{};
+
+        // Matches Special K's append convention: the running value is carried un-inverted between
+        // calls, so chaining chunks equals hashing the concatenation.
+        inline uint32_t crc32c_append(uint32_t crc, const uint8_t *data, size_t size)
+        {
+            crc = ~crc;
+            while (size-- != 0)
+                crc = kCrc32c.v[(crc ^ *data++) & 0xFFu] ^ (crc >> 8);
+            return ~crc;
+        }
+    }
+
+    uint32_t compute_crc32c_rows(const uint8_t *data, uint32_t src_pitch, uint32_t tight_row, uint32_t rows)
+    {
+        if (data == nullptr || tight_row == 0 || rows == 0)
+            return 0;
+
+        if (src_pitch < tight_row)
+            src_pitch = tight_row;
+
+        uint32_t crc = 0;
+        for (uint32_t y = 0; y < rows; ++y)
+            crc = crc32c_append(crc, data + static_cast<size_t>(y) * src_pitch, tight_row);
+        return crc;
+    }
+
+    std::string format_sk_hash_hex(uint32_t hash)
+    {
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "%08X", hash);
+        return std::string(buf);
+    }
+
     std::string format_hash_hex(uint64_t hash)
     {
         char buf[32];

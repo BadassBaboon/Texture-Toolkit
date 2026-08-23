@@ -20,6 +20,9 @@ namespace TextureToolkit
         bool filter_small_textures = true;
         bool show_current_frame_only = true;
 
+        // Also accept texture packs named the way Special K names them (CRC-32C of the top mip).
+        bool accept_sk_names = true;
+
         bool show_osd_banner = true;
         float osd_duration_seconds = 6.0f;
 

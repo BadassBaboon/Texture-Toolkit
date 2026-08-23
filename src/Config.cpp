@@ -62,6 +62,7 @@ namespace TextureToolkit
         m_config.auto_dump = GetPrivateProfileIntW(L"TextureToolkit", L"AutoDump", 0, ini_w) != 0;
         m_config.filter_small_textures = GetPrivateProfileIntW(L"TextureToolkit", L"FilterSmallTextures", 1, ini_w) != 0;
         m_config.show_current_frame_only = GetPrivateProfileIntW(L"TextureToolkit", L"ShowCurrentFrameOnly", 1, ini_w) != 0;
+        m_config.accept_sk_names = GetPrivateProfileIntW(L"TextureToolkit", L"AcceptSpecialKNames", 1, ini_w) != 0;
 
         // OSD
         m_config.show_osd_banner = GetPrivateProfileIntW(L"TextureToolkit", L"ShowOSDBanner", 1, ini_w) != 0;
@@ -95,6 +96,8 @@ namespace TextureToolkit
              << "AutoDump=" << (m_config.auto_dump ? 1 : 0) << "\n"
              << "FilterSmallTextures=" << (m_config.filter_small_textures ? 1 : 0) << "\n"
              << "ShowCurrentFrameOnly=" << (m_config.show_current_frame_only ? 1 : 0) << "\n\n"
+             << "; Also load texture packs named the way Special K names them (CRC-32C of the top mip)\n"
+             << "AcceptSpecialKNames=" << (m_config.accept_sk_names ? 1 : 0) << "\n\n"
              << "; On-Screen Display (OSD)\n"
              << "ShowOSDBanner=" << (m_config.show_osd_banner ? 1 : 0) << "\n\n"
              << "; Diagnostics: 1 = verbose per-texture debug logging (slow)\n"

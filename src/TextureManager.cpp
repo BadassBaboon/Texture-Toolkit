@@ -21,6 +21,26 @@ namespace TextureToolkit
     static const GUID TT_HASH_GUID =
         { 0x6b7a4c10, 0x3f2e, 0x4d9a, { 0x9e, 0x21, 0x8c, 0x0a, 0x5b, 0x1d, 0x2e, 0x34 } };
 
+    // Per-view cache of the bind-time decision. Resolving it from scratch cost four COM calls and
+    // the manager lock FOR EVERY BOUND TEXTURE, EVERY FRAME -- thousands of times a second for an
+    // answer that only changes when something below bumps m_bind_generation.
+    // {2F1D8A44-9C63-4E77-B0A5-7E4C11D9F326}
+    static const GUID TT_SRV_CACHE_GUID =
+        { 0x2f1d8a44, 0x9c63, 0x4e77, { 0xb0, 0xa5, 0x7e, 0x4c, 0x11, 0xd9, 0xf3, 0x26 } };
+
+    struct SrvBindCache
+    {
+        uint32_t generation;
+        uint32_t tracked;                       // 0 = this view carries no texture of ours
+        uint64_t hash;
+        uint64_t last_seen_frame;
+        ID3D11ShaderResourceView *replacement;  // null = leave the original in place
+    };
+
+    // Hashes drawn this frame, accumulated per thread and merged in batches, so the bind hook does
+    // not contend on the manager lock for every bound texture.
+    static thread_local std::vector<uint64_t> s_seen_this_frame;
+
     static bool is_block_compressed(reshade::api::format format);
     static D3DFORMAT dxgi_to_d3d9_format(reshade::api::format format);
 
@@ -274,6 +294,35 @@ namespace TextureToolkit
         return compute_hash64_rows(src, pitch, width * bpp, height);
     }
 
+    // Special K's name for the same D3D9 texture: CRC-32C over exactly the rows our own hash walks.
+    // Kept beside calculate_d3d9_pixel_hash so the two can never disagree about which bytes count.
+    static uint32_t calculate_d3d9_sk_hash(const void *pixel_data, UINT width, UINT height, D3DFORMAT format, UINT pitch)
+    {
+        if (pixel_data == nullptr || width == 0 || height == 0)
+            return 0;
+
+        const uint8_t *src = static_cast<const uint8_t *>(pixel_data);
+        const uint32_t fmt4cc = static_cast<uint32_t>(format);
+        const bool is_bc = (format == D3DFMT_DXT1 || format == D3DFMT_DXT2 || format == D3DFMT_DXT3 ||
+                            format == D3DFMT_DXT4 || format == D3DFMT_DXT5 ||
+                            fmt4cc == MAKEFOURCC('A','T','I','1') || fmt4cc == MAKEFOURCC('B','C','4','U') ||
+                            fmt4cc == MAKEFOURCC('A','T','I','2') || fmt4cc == MAKEFOURCC('B','C','5','U'));
+
+        if (is_bc)
+        {
+            const bool small_block = (format == D3DFMT_DXT1 ||
+                                      fmt4cc == MAKEFOURCC('A','T','I','1') || fmt4cc == MAKEFOURCC('B','C','4','U'));
+            const UINT block_size = small_block ? 8 : 16;
+            return compute_crc32c_rows(src, pitch, ((width + 3) / 4) * block_size, (height + 3) / 4);
+        }
+
+        const UINT bpp = d3d9_bytes_per_pixel(format);
+        if (bpp == 0)
+            return 0;
+
+        return compute_crc32c_rows(src, pitch, width * bpp, height);
+    }
+
     // Human-readable DXGI_FORMAT name. Covers the formats games actually ship textures in;
     // anything else falls back to the numeric id.
     static std::string dxgi_format_name(DXGI_FORMAT f)
@@ -389,6 +438,7 @@ namespace TextureToolkit
         enable_injection = cfg.enable_injection;
         filter_small_textures = cfg.filter_small_textures;
         show_current_frame_only = cfg.show_current_frame_only;
+        accept_sk_names = cfg.accept_sk_names;
 
         std::error_code ec;
         std::filesystem::create_directories(m_dump_dir, ec);
@@ -436,6 +486,7 @@ namespace TextureToolkit
             return;
         release_preview();
         m_preview_target_hash = hash;
+        m_bind_generation.fetch_add(1, std::memory_order_relaxed);
     }
 
     uint64_t TextureManager::get_original_preview_handle()
@@ -601,10 +652,20 @@ namespace TextureToolkit
         m_d3d11_replacements.clear();
     }
 
+    // Caller MUST hold m_mutex.
+    void TextureManager::flush_seen_locked()
+    {
+        for (uint64_t hash : s_seen_this_frame)
+            m_current_frame_hashes.insert(hash);
+        s_seen_this_frame.clear();
+    }
+
     void TextureManager::on_frame()
     {
         std::lock_guard<std::mutex> lock(m_mutex);
+        flush_seen_locked();
         m_frame_count++;
+        m_frame_count_atomic.store(m_frame_count, std::memory_order_relaxed);
         const uint64_t now_ticks = GetTickCount64();
 
         m_active_frame_hashes = m_current_frame_hashes;
@@ -662,6 +723,7 @@ namespace TextureToolkit
         // thread, so scanning a slow disk (or a resource root on a network share) while holding it
         // stalls texture tracking for as long as the scan takes. Build the new map first, then swap.
         std::unordered_map<uint64_t, std::filesystem::path> found;
+        std::unordered_map<uint32_t, std::filesystem::path> found_sk;
 
         std::error_code scan_ec;
         if (std::filesystem::exists(m_inject_dir, scan_ec) && !scan_ec)
@@ -681,6 +743,31 @@ namespace TextureToolkit
                 const bool prefixed = (stem.rfind("0x", 0) == 0 || stem.rfind("0X", 0) == 0);
                 if (prefixed)
                     stem = stem.substr(2);
+
+                // Special K names a pack <topCRC>.dds or <topCRC>_<fullCRC>.dds, optionally
+                // prefixed "Uncompressed_" and/or suffixed "_TYPELESS". We key on the top-LOD CRC,
+                // which is the part we can reproduce, and ignore the rest of the name.
+                if (stem.size() != 16)
+                {
+                    std::string sk = stem;
+                    if (sk.rfind("Uncompressed_", 0) == 0)
+                        sk = sk.substr(13);
+                    const size_t underscore = sk.find('_');
+                    if (underscore != std::string::npos)
+                        sk = sk.substr(0, underscore);
+
+                    if (sk.size() == 8 && sk.find_first_not_of("0123456789abcdefABCDEF") == std::string::npos)
+                    {
+                        try
+                        {
+                            found_sk.emplace(static_cast<uint32_t>(std::stoul(sk, nullptr, 16)), entry.path());
+                        }
+                        catch (...)
+                        {
+                        }
+                        continue;
+                    }
+                }
 
                 try
                 {
@@ -704,6 +791,7 @@ namespace TextureToolkit
             std::lock_guard<std::mutex> lock(m_mutex);
             release_replacements();
             m_injected_files.swap(found);
+            m_sk_injected_files.swap(found_sk);
             m_failed_injections.clear(); // retry files that were bad last time; they may be fixed now
             m_pending_injections.clear();
 
@@ -720,17 +808,37 @@ namespace TextureToolkit
                     pair.second.status = TextureStatus::ORIGINAL;
             }
 
+            // Every cached bind decision refers to replacements that were just released.
+            m_bind_generation.fetch_add(1, std::memory_order_relaxed);
+
             Logger::get().info("[TextureManager] Scanned " + std::to_string(m_injected_files.size()) + " DDS replacement file(s) in TT/inject.");
+            if (!m_sk_injected_files.empty())
+                Logger::get().info("[TextureManager] Also found " + std::to_string(m_sk_injected_files.size()) +
+                                   " Special K-named file(s); these match on the top-mip CRC-32C.");
         }
     }
 
-    std::filesystem::path TextureManager::find_injection_path(uint64_t hash)
+    std::filesystem::path TextureManager::find_injection_path(uint64_t hash, uint32_t sk_hash, bool *via_sk_name)
     {
+        if (via_sk_name != nullptr)
+            *via_sk_name = false;
+
         auto it = m_injected_files.find(hash);
         if (it != m_injected_files.end())
-        {
             return it->second;
+
+        // Fall back to Special K's naming, so an SK texture pack works without being renamed.
+        if (accept_sk_names && sk_hash != 0)
+        {
+            auto sit = m_sk_injected_files.find(sk_hash);
+            if (sit != m_sk_injected_files.end())
+            {
+                if (via_sk_name != nullptr)
+                    *via_sk_name = true;
+                return sit->second;
+            }
         }
+
         return std::filesystem::path();
     }
 
@@ -954,6 +1062,10 @@ namespace TextureToolkit
         if (hash == 0)
             return;
 
+        const uint32_t sk_hash = accept_sk_names
+            ? calculate_d3d9_sk_hash(pixel_data, width, height, format, pitch)
+            : 0u;
+
         UINT original_levels = texture->GetLevelCount();
 
         std::lock_guard<std::mutex> lock(m_mutex);
@@ -969,6 +1081,7 @@ namespace TextureToolkit
         TextureDetails details;
         details.hash = hash;
         details.hash_hex = format_hash_hex(hash);
+        details.sk_hash = sk_hash;
         details.width = width;
         details.height = height;
         details.mip_levels = original_levels;
@@ -987,7 +1100,9 @@ namespace TextureToolkit
         details.last_seen_frame = m_frame_count;
         details.last_seen_ticks = GetTickCount64();
 
-        std::filesystem::path inject_path = find_injection_path(hash);
+        bool via_sk_name = false;
+        std::filesystem::path inject_path = find_injection_path(hash, sk_hash, &via_sk_name);
+        details.injected_via_sk_name = via_sk_name;
         if (enable_injection && !inject_path.empty() &&
             m_d3d9_replacements.find(hash) == m_d3d9_replacements.end())
         {
@@ -1149,6 +1264,51 @@ namespace TextureToolkit
         if (orig == nullptr)
             return orig;
 
+        const uint32_t generation = m_bind_generation.load(std::memory_order_relaxed);
+        const uint64_t frame = m_frame_count_atomic.load(std::memory_order_relaxed);
+
+        // Fast path: one COM call, no lock. This runs for every texture the game binds.
+        SrvBindCache cache = {};
+        UINT cache_size = sizeof(cache);
+        if (SUCCEEDED(orig->GetPrivateData(TT_SRV_CACHE_GUID, &cache_size, &cache)) &&
+            cache_size == sizeof(cache) && cache.generation == generation)
+        {
+            if (cache.tracked == 0)
+                return orig; // not one of ours; nothing to track or replace
+
+            // Record visibility at most once per view per frame, into a per-thread buffer.
+            if (cache.last_seen_frame != frame)
+            {
+                cache.last_seen_frame = frame;
+                orig->SetPrivateData(TT_SRV_CACHE_GUID, sizeof(cache), &cache);
+
+                s_seen_this_frame.push_back(cache.hash);
+                if (s_seen_this_frame.size() >= 64)
+                {
+                    std::lock_guard<std::mutex> lock(m_mutex);
+                    flush_seen_locked();
+                }
+            }
+
+            // enable_injection is read live rather than cached, so the panel's checkbox takes
+            // effect immediately instead of waiting for a generation bump.
+            return (cache.replacement != nullptr && enable_injection) ? cache.replacement : orig;
+        }
+
+        return resolve_srv11_slow(orig, generation, frame);
+    }
+
+    // Everything the fast path above must not do: COM queries, the manager lock, and the one-time
+    // bookkeeping (view format, preview pin, bulk-dump capture). Runs on the first bind of a view
+    // and again whenever m_bind_generation moves.
+    ID3D11ShaderResourceView *TextureManager::resolve_srv11_slow(ID3D11ShaderResourceView *orig, uint32_t generation, uint64_t frame)
+    {
+        SrvBindCache cache = {};
+        cache.generation = generation;
+        cache.tracked = 0;
+        cache.last_seen_frame = frame;
+        cache.replacement = nullptr;
+
         ID3D11Resource *orig_res = nullptr;
         orig->GetResource(&orig_res);
         if (orig_res == nullptr)
@@ -1160,10 +1320,24 @@ namespace TextureToolkit
         HRESULT hr = orig_res->GetPrivateData(TT_HASH_GUID, &size, &hash);
         orig_res->Release();
         if (FAILED(hr) || size != sizeof(hash))
+        {
+            // Remember the miss too: an untracked view is the common case in a busy frame, and
+            // this is what stops it paying for three COM calls on every bind.
+            orig->SetPrivateData(TT_SRV_CACHE_GUID, sizeof(cache), &cache);
             return orig;
+        }
 
         D3D11_SHADER_RESOURCE_VIEW_DESC vd = {};
         orig->GetDesc(&vd);
+
+        // Our replacements are plain 2D views. If the game is sampling this content as an array,
+        // cube, 3D or multisampled view, handing its shader a TEXTURE2D SRV would feed the wrong
+        // resource type to the sampler: corrupt output or a dropped draw. Track it, but never
+        // substitute.
+        const bool replaceable_view = (vd.ViewDimension == D3D11_SRV_DIMENSION_TEXTURE2D);
+
+        cache.tracked = 1;
+        cache.hash = hash;
 
         std::lock_guard<std::mutex> lock(m_mutex);
         m_current_frame_hashes.insert(hash);
@@ -1180,11 +1354,6 @@ namespace TextureToolkit
             }
         }
 
-        // Our replacements are plain 2D views. If the game is sampling this content as an array,
-        // cube, 3D or multisampled view, handing its shader a TEXTURE2D SRV would feed the wrong
-        // resource type to the sampler: corrupt output or a dropped draw. Track it, but never
-        // substitute. (Costs nothing in the common case and only matters in untested games.)
-        const bool replaceable_view = (vd.ViewDimension == D3D11_SRV_DIMENSION_TEXTURE2D);
         if (!replaceable_view)
         {
             static bool s_warned = false;
@@ -1217,19 +1386,24 @@ namespace TextureToolkit
             }
         }
 
-        if (!enable_injection || !replaceable_view)
-            return orig;
-
-        auto it = m_d3d11_replacements.find(hash);
-        if (it == m_d3d11_replacements.end())
+        ID3D11ShaderResourceView *result = orig;
+        if (enable_injection && replaceable_view)
         {
-            // Hot reload: see the D3D9 path in get_replacement_texture9.
-            note_pending_injection(hash, true);
+            auto it = m_d3d11_replacements.find(hash);
+            if (it == m_d3d11_replacements.end())
+            {
+                // Hot reload: see the D3D9 path in get_replacement_texture9.
+                note_pending_injection(hash, true);
+            }
+            else if (it->second != nullptr)
+            {
+                cache.replacement = it->second;
+                result = it->second;
+            }
         }
-        if (it != m_d3d11_replacements.end() && it->second != nullptr)
-            return it->second;
 
-        return orig;
+        orig->SetPrivateData(TT_SRV_CACHE_GUID, sizeof(cache), &cache);
+        return result;
     }
 
     void TextureManager::register_unmap_texture11(ID3D11Device *device, ID3D11Resource *resource, const void *pixel_data, UINT width, UINT height, DXGI_FORMAT format, UINT pitch,
@@ -1256,6 +1430,10 @@ namespace TextureToolkit
         if (hash == 0)
             return;
 
+        const uint32_t sk_hash = accept_sk_names
+            ? compute_crc32c_rows(static_cast<const uint8_t *>(pixel_data), pitch, tight_row, rows)
+            : 0u;
+
         // Original description drives the replacement's mip topology and the info panel.
         D3D11_TEXTURE2D_DESC orig_desc = {};
         {
@@ -1276,6 +1454,7 @@ namespace TextureToolkit
         TextureDetails details;
         details.hash = hash;
         details.hash_hex = format_hash_hex(hash);
+        details.sk_hash = sk_hash;
         details.width = width;
         details.height = height;
         details.mip_levels = (original_levels == 0) ? full_mip_count(width, height) : original_levels;
@@ -1294,7 +1473,9 @@ namespace TextureToolkit
         details.last_seen_frame = m_frame_count;
         details.last_seen_ticks = GetTickCount64();
 
-        std::filesystem::path inject_path = find_injection_path(hash);
+        bool via_sk_name = false;
+        std::filesystem::path inject_path = find_injection_path(hash, sk_hash, &via_sk_name);
+        details.injected_via_sk_name = via_sk_name;
         if (enable_injection && !inject_path.empty() &&
             m_d3d11_replacements.find(hash) == m_d3d11_replacements.end())
         {
@@ -1405,6 +1586,7 @@ namespace TextureToolkit
                         {
                             // Keep our reference (released in release_replacements).
                             m_d3d11_replacements[hash] = highres_srv;
+                            m_bind_generation.fetch_add(1, std::memory_order_relaxed);
 
                             details.status = TextureStatus::INJECTED;
                             details.filepath_injected = inject_path.string();
@@ -1797,6 +1979,7 @@ namespace TextureToolkit
             m_pending_dumps.insert(pair.first);
             ++queued;
         }
+        m_bind_generation.fetch_add(1, std::memory_order_relaxed);
         Logger::get().info("[TextureManager] Dump-all queued " + std::to_string(queued) + (scene_only ? " active" : " tracked") + " texture(s); each is written the next time it is drawn.");
         return queued;
     }

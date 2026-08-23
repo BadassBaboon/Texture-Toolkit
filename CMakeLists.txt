@@ -4,6 +4,11 @@ project(TextureToolkit CXX C)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Link the C runtime statically. This DLL is injected into arbitrary games on arbitrary machines;
+# with the dynamic CRT a missing Visual C++ redistributable means the module simply fails to load,
+# and since nothing of ours runs there is not even a log line to explain it.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
 set(MINHOOK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../reshade/deps/minhook")
 set(IMGUI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../reshade/deps/imgui")
 set(STB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../reshade/deps/stb")
@@ -61,16 +66,19 @@ set(SOURCES
 
 add_library(TextureToolkit SHARED ${SOURCES})
 
+# The architecture is in the file name: a 32-bit game needs the x86 build, and the two are
+# indistinguishable once they are sitting in a plugins folder together.
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(TT_ARCH "x64")
+else()
+    set(TT_ARCH "x86")
+endif()
+
 set_target_properties(TextureToolkit PROPERTIES
     PREFIX ""
-    OUTPUT_NAME "TextureToolkit"
+    OUTPUT_NAME "TextureToolkit-${TT_ARCH}"
+    SUFFIX ".asi"
 )
-
-if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-    set_target_properties(TextureToolkit PROPERTIES SUFFIX ".asi")
-else()
-    set_target_properties(TextureToolkit PROPERTIES SUFFIX ".asi")
-endif()
 
 target_compile_definitions(TextureToolkit PRIVATE
     WIN32_LEAN_AND_MEAN

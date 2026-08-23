@@ -20,6 +20,7 @@ Storing the hash on the resource, instead of tracking raw pointers, keeps a repl
 - Mip handling: a replacement is created with the original texture's mip count. Missing mips are generated for uncompressed formats; a compressed replacement without a full chain loads at its top level and logs a warning.
 - Dumping to `TT/dump` as `.dds`, with the full mip chain: automatically on load, one at a time from the panel, or every tracked texture at once.
 - 64-bit content hashing, so two identical textures share one hash and one replacement. The hash covers the texture's tightly-packed rows, not the driver's row padding, so a hash means the same thing on every machine and an `inject` folder can be shared as a mod.
+- Special K texture packs load unchanged: files named the way Special K names them (eight hex digits, the CRC-32C of the top mip) are recognised alongside our own, and show as "SK Injected" in the panel.
 - Input isolation and a software cursor, so the game stops reading the mouse and keyboard while the panel is open.
 
 ## The in-game panel
@@ -39,7 +40,7 @@ cmake -B build32 -A Win32
 cmake --build build32 --config Release
 ```
 
-Output: `build32/Release/TextureToolkit.asi`.
+Output: `build32/Release/TextureToolkit-x86.asi`.
 
 ### 64-bit (x64)
 
@@ -48,13 +49,13 @@ cmake -B build64 -A x64
 cmake --build build64 --config Release
 ```
 
-Output: `build64/Release/TextureToolkit.asi`.
+Output: `build64/Release/TextureToolkit-x64.asi`.
 
 Match the build to the game: a 32-bit game needs the x86 build.
 
 ## Installing
 
-1. Copy `TextureToolkit.asi` into the game folder, or into a `plugins/` or `scripts/` folder when using Ultimate ASI Loader. To load it as a proxy instead, rename it to `dinput8.dll`, `d3d9.dll`, or `dxgi.dll`.
+1. Copy `TextureToolkit-x86.asi` (32-bit games) or `TextureToolkit-x64.asi` (64-bit games) into the game folder, or into a `plugins/` or `scripts/` folder when using Ultimate ASI Loader. To load it as a proxy instead, rename it to `dinput8.dll`, `d3d9.dll`, or `dxgi.dll`.
 2. Launch the game. Texture Toolkit writes `TextureToolkit.ini` and its log next to the `.asi`, and creates a `TT/` folder next to the executable containing `dump/`, `inject/`, and `imgui.ini`.
 3. Press `INSERT` to open the panel.
 
@@ -72,6 +73,7 @@ EnableInjection=1
 AutoDump=0
 FilterSmallTextures=1
 ShowCurrentFrameOnly=1
+AcceptSpecialKNames=1
 ShowOSDBanner=1
 Verbose=0
 ```
@@ -82,6 +84,7 @@ Verbose=0
 - `AutoDump`: dump every texture to the `dump/` folder as it loads.
 - `FilterSmallTextures`: ignore textures under 16x16.
 - `ShowCurrentFrameOnly`: list only textures drawn in the current scene.
+- `AcceptSpecialKNames`: also load files named the way Special K names them. Our own naming always wins when both exist for the same texture.
 - `ShowOSDBanner`: show the startup banner.
 - `Verbose`: write per-texture debug lines to the log; leave off for normal use, since it slows the game.
 
@@ -116,6 +119,10 @@ treated as a contract rather than an implementation detail:
 - The hash: 64-bit, computed over mip 0's tightly-packed rows, with the algorithm in `TextureHash.h`.
 - The filename: 16 uppercase hex digits plus `.dds`. A `0x` prefix is also accepted.
 - The layout: `<ResourceRoot>/inject` and `<ResourceRoot>/dump`.
+
+Special K's naming is accepted as a **second** key, never as a replacement for ours: an SK pack
+drops into `inject/` and works, while files named our way keep working exactly as before. Adding a
+compatibility naming is additive by construction and cannot rename anything.
 
 The set of pixel formats Texture Toolkit recognises is deliberately **additive**. A format it cannot
 positively identify is skipped rather than guessed at, so adding support for one later can only make

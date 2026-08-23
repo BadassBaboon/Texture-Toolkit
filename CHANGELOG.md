@@ -38,6 +38,14 @@ First public release.
 - Injection health in the panel: how many files were found, applied, and refused.
 - Continuous integration building both architectures, publishing a draft release on a `v*` tag.
 
+### Security
+- A malformed or corrupt `.dds` in `inject/` could size an allocation from unvalidated header
+  fields. Files downloaded from modding sites are untrusted input, and this ran underneath a draw
+  call where a failed allocation ends the process. Dimensions, mip count and array size are now
+  bounded, subresource sizes are recomputed in 64-bit to catch a wrapped row pitch, header reads are
+  checked for truncation, and the whole parse is exception-guarded so a bad file is refused with a
+  logged reason instead of taking the game down.
+
 ### Fixed
 - A use-after-free when the inject folder was rescanned while the game was rendering: the bind fast
   path reads its cached replacement without the lock, so replacements are now retired for a couple
@@ -49,6 +57,11 @@ First public release.
 - A recursive lock of a non-recursive mutex crashed the dump path on Direct3D 11.
 - Textures whose only inject file used Special K's naming could be evicted from the panel.
 - Games reaching Direct3D 11 through `CreateDXGIFactory2` got no overlay.
+- A replacement's mip chain was clamped to the original texture's level count, silently discarding
+  levels an author had deliberately exported.
+- The short-chain warning fired on any chain shorter than the original's and told authors that
+  compressed replacements "must ship a full mip chain", which the loader never actually required.
+  It now fires only for a single-level file, where the shimmering it describes is real.
 
 ### Changed
 - The C runtime is linked statically, so the plugin no longer needs a Visual C++ redistributable

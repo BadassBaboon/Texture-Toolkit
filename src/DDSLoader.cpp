@@ -2,6 +2,7 @@
 #include <fstream>
 #include <cstring>
 #include <algorithm>
+#include <exception>
 
 namespace TextureToolkit
 {
@@ -63,7 +64,49 @@ namespace TextureToolkit
         return static_cast<uint32_t>(format);
     }
 
+    // A .dds in inject/ is untrusted input: users download texture packs from modding sites and
+    // drop them in. A header that disagrees with the file (corrupt download, a tool writing
+    // nonsense, or something hand-edited) must fail the load, never size an allocation.
+    // These bounds are generous -- D3D11's own maximum 2D dimension is 16384.
+    static constexpr uint32_t kMaxDimension = 32768;
+    static constexpr uint32_t kMaxArraySize = 2048;
+    static constexpr uint64_t kMaxSubresourceBytes = 512ull * 1024 * 1024;
+
+    static uint32_t natural_mip_count(uint32_t w, uint32_t h)
+    {
+        uint32_t n = 1;
+        while (w > 1 || h > 1)
+        {
+            w = (w > 1) ? w / 2 : 1;
+            h = (h > 1) ? h / 2 : 1;
+            ++n;
+        }
+        return n;
+    }
+
+    static bool load_dds_impl(const std::string &filepath, DDSImage &out_image);
+
     bool load_dds(const std::string &filepath, DDSImage &out_image)
+    {
+        // std::vector throws on a length it cannot serve. This runs underneath a game's draw call,
+        // where an escaping exception ends the process, so it stops here.
+        try
+        {
+            return load_dds_impl(filepath, out_image);
+        }
+        catch (const std::exception &e)
+        {
+            out_image.load_error = std::string("exception while reading: ") + e.what();
+            return false;
+        }
+        catch (...)
+        {
+            out_image.load_error = "unknown exception while reading";
+            return false;
+        }
+    }
+
+    static bool load_dds_impl(const std::string &filepath, DDSImage &out_image)
     {
         std::ifstream file(filepath, std::ios::binary);
         if (!file.is_open())
@@ -76,13 +119,31 @@ namespace TextureToolkit
 
         DDS_HEADER header = {};
         file.read(reinterpret_cast<char *>(&header), sizeof(header));
+        if (file.gcount() != static_cast<std::streamsize>(sizeof(header)))
+        {
+            out_image.load_error = "truncated: file ends inside the DDS header";
+            return false;
+        }
         if (header.dwSize != sizeof(DDS_HEADER) || header.ddspf.dwSize != sizeof(DDS_PIXELFORMAT))
             return false;
+
+        if (header.dwWidth == 0 || header.dwHeight == 0 ||
+            header.dwWidth > kMaxDimension || header.dwHeight > kMaxDimension)
+        {
+            out_image.load_error = "implausible dimensions in header (" + std::to_string(header.dwWidth) +
+                                   "x" + std::to_string(header.dwHeight) + ")";
+            return false;
+        }
 
         out_image.width = header.dwWidth;
         out_image.height = header.dwHeight;
         out_image.depth = (header.dwDepth > 0) ? header.dwDepth : 1;
+        // A chain cannot be longer than repeated halving allows; a header claiming more is wrong
+        // about itself, and the extra levels would only drive reads past the end of the file.
+        const uint32_t max_levels = natural_mip_count(out_image.width, out_image.height);
         out_image.mip_levels = (header.dwMipMapCount > 0) ? header.dwMipMapCount : 1;
+        if (out_image.mip_levels > max_levels)
+            out_image.mip_levels = max_levels;
         out_image.array_size = 1;
 
         reshade::api::format fmt = reshade::api::format::unknown;
@@ -94,8 +155,13 @@ namespace TextureToolkit
                 DDS_HEADER_DXT10 dxt10 = {};
                 file.read(reinterpret_cast<char *>(&dxt10), sizeof(dxt10));
                 fmt = dxgi_to_reshade_format(dxt10.dxgiFormat);
+                if (file.gcount() != static_cast<std::streamsize>(sizeof(dxt10)))
+                {
+                    out_image.load_error = "truncated: file ends inside the DX10 header";
+                    return false;
+                }
                 if (dxt10.arraySize > 0)
-                    out_image.array_size = dxt10.arraySize;
+                    out_image.array_size = (std::min)(dxt10.arraySize, kMaxArraySize);
             }
             else if (header.ddspf.dwFourCC == MAKE_FOURCC('D', 'X', 'T', '1'))
                 fmt = reshade::api::format::bc1_unorm;
@@ -161,6 +227,20 @@ namespace TextureToolkit
 
             if (slice_pitch == 0)
                 slice_pitch = row_pitch * current_h;
+
+            // format_row_pitch multiplies in 32 bits, so an extreme width can wrap to a small or
+            // zero pitch. Recomputing in 64 bits catches that, and catches a level whose size is
+            // simply not credible, before either becomes an allocation.
+            const uint64_t checked_slice =
+                static_cast<uint64_t>(reshade::api::format_row_pitch(fmt, current_w)) * current_h;
+            if (row_pitch == 0 || slice_pitch == 0 || checked_slice > kMaxSubresourceBytes)
+            {
+                if (mip == 0)
+                    out_image.load_error = "implausible mip 0 size for " + std::to_string(current_w) +
+                                           "x" + std::to_string(current_h) + " in format " +
+                                           std::to_string(static_cast<uint32_t>(fmt));
+                break;
+            }
 
             std::vector<uint8_t> buffer(slice_pitch);
 

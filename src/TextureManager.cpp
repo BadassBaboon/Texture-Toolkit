@@ -1751,6 +1751,8 @@ namespace TextureToolkit
 
         // levels is slice-major: mip_levels entries per array slice, so the mip index restarts
         // at the top of every slice.
+        if (array_size == 0)
+            array_size = 1;
         const size_t mip_levels = levels.size() / array_size;
         if (mip_levels == 0)
             return {};

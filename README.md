@@ -17,7 +17,7 @@ Storing the hash on the resource, instead of tracking raw pointers, keeps a repl
 
 - Direct3D 9 and Direct3D 11, both x86 and x64.
 - DDS replacement: put `<hash>.dds` in `TT/inject` and it loads without a restart.
-- Mip handling: a replacement is created with the original texture's mip count. Missing mips are generated for uncompressed formats; a compressed replacement without a full chain loads at its top level and logs a warning.
+- Mip handling: a replacement is created with the mip count its own file carries. A single-level file replacing a mipmapped texture has its chain filled in when the format is uncompressed, and loads at its top level with a warning when it is not.
 - Dumping to `TT/dump` as `.dds`, with the full mip chain: automatically on load, one at a time from the panel, or every tracked texture at once.
 - 64-bit content hashing, so two identical textures share one hash and one replacement. The hash covers the texture's tightly-packed rows, not the driver's row padding, so a hash means the same thing on every machine and an `inject` folder can be shared as a mod.
 - Special K texture packs load unchanged: files named the way Special K names them (eight hex digits, the CRC-32C of the top mip) are recognised alongside our own, and show as "SK Injected" in the panel.
@@ -31,7 +31,7 @@ The right pane inspects the selected texture. The preview shows the injected rep
 
 ## Building
 
-Requires CMake 3.20 or newer and a Visual Studio toolchain with the Windows SDK. The build expects Dear ImGui, MinHook, and stb under a sibling `../reshade/deps` directory and ReShade's headers under `../reshade/include`; the exact paths are at the top of `CMakeLists.txt`.
+Requires CMake 3.20 or newer, a Visual Studio toolchain with the Windows SDK, and git on PATH. Dear ImGui and MinHook are fetched automatically at configure time and pinned to the tags at the top of `CMakeLists.txt`, so a clean clone builds with no further setup.
 
 ### 32-bit (x86)
 
@@ -106,10 +106,38 @@ Two things decide whether a hash matches on someone else's machine:
 Neither depends on the player's GPU or driver: the hash covers the texture's tightly-packed rows,
 never the driver's row padding, so it means the same thing on every machine.
 
-Export replacements **with a full mip chain**. A block-compressed replacement without mips cannot
-have its mips regenerated, so it samples its top level at every distance and shimmers in motion --
-and a higher-resolution replacement aliases *more* than the original did, not less. Mips cost about
-a third more VRAM. Dumps are written with their full chain, so an edited dump is already correct.
+## Mip levels
+
+**Texture Toolkit builds a replacement with the mip count your file carries.** Mip count is an
+authoring decision and is treated as one: a chain you deliberately stopped early is applied as
+authored, without complaint. The one case that is filled in for you is a *single-level* file
+replacing a mipmapped texture, which is equally what an author who meant it and an author who
+forgot the export checkbox would produce -- and only for uncompressed formats, where downsampling
+the source is cheap and clean.
+
+For most world art, export **with a full chain**. A block-compressed replacement without mips
+samples its top level at every distance and shimmers in motion, and a higher-resolution replacement
+aliases *more* than the original did, not less. Mips cost about a third more VRAM. Dumps are written
+with their full chain, so an edited dump is already correct.
+
+Stopping the chain early is the right call in specific places, and nothing here will argue with you:
+UI and HUD art drawn at or near 1:1 never samples below level 0 and pays VRAM for every level it
+carries, and some textures are authored against a known minimum on-screen size.
+
+> Anisotropic filtering is not a reason to ship fewer mips. Aniso exists to *correct* the
+> over-blurring that mip sampling causes at grazing angles; dropping levels does not buy sharpness,
+> it buys shimmer.
+
+### Why mips are not generated for compressed formats
+
+Missing mips cannot be recovered from block-compressed data. Producing them means decompressing,
+downsampling, and re-encoding -- a second lossy pass over data that already took one -- so the
+generated levels come out visibly softer than the ones a proper exporter would have made from your
+uncompressed source. Texture Toolkit could pull in a BC encoder (DirectXTex) to do this
+automatically, and deliberately does not: it would spend a dependency and a quality penalty to
+paper over an export mistake, while also making it impossible to tell a deliberate short chain from
+a forgotten one. The assumption is that someone authoring texture replacements knows which
+compression and how many levels their texture wants. Export the mips you want; you will get them.
 
 ## Compatibility
 
@@ -134,7 +162,7 @@ new textures moddable -- it can never change a hash that already exists.
 - A DirectX 8 game run through a `d3d8to9` wrapper renders as Direct3D 9, so the overlay appears, but its textures stay invisible. The wrapper feeds pixel data into the D3D9 textures through an internal path that never calls a `LockRect`, `UpdateSurface`, `UpdateTexture`, or `StretchRect` we can hook, so there is nothing to hash. Capturing those would require hooking Direct3D 8 directly, which is not implemented. With `Verbose=1` the log fills with `Hooked_CreateTexture` lines and never a `Tracked` line.
 - Injection reads `.dds` only. Dumps are written as `.dds`.
 - A D3D9 texture in the default pool cannot be read back with `LockRect`, so the panel's Dump button fails on those; Auto-dump captures them from the upload instead.
-- A compressed replacement without a full mip chain samples its top level at every distance, which aliases in motion. The missing mips cannot be regenerated from compressed data, so export those with mipmaps.
+- Mips cannot be generated for block-compressed replacements; a single-level compressed file loads at its top level and aliases in motion. See [Mip levels](#mip-levels) for why this is not done automatically.
 
 ## License
 

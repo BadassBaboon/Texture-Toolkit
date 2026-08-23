@@ -514,15 +514,20 @@ namespace TextureToolkit
                     Logger::get().debug("[D3D9Hook] Hooked_UnlockRect: Registering texture=0x" + std::to_string(reinterpret_cast<uintptr_t>(texture)));
                 }
 
-                TextureManager::get().register_unmap_texture9(
-                    get().m_device,
-                    texture,
-                    data.rect.pBits,
-                    data.width,
-                    data.height,
-                    data.format,
-                    static_cast<UINT>(data.rect.Pitch)
-                );
+                // Pitch is signed here and unsigned from there on, so a negative one would become
+                // an enormous row length instead of a refused lock.
+                if (data.rect.Pitch > 0)
+                {
+                    TextureManager::get().register_unmap_texture9(
+                        get().m_device,
+                        texture,
+                        data.rect.pBits,
+                        data.width,
+                        data.height,
+                        data.format,
+                        static_cast<UINT>(data.rect.Pitch)
+                    );
+                }
 
                 s_locked_textures.erase(it);
             }
@@ -649,15 +654,20 @@ namespace TextureToolkit
                     Logger::get().debug("[D3D9Hook] Hooked_SurfaceUnlockRect: Registering parent texture=0x" + std::to_string(reinterpret_cast<uintptr_t>(texture)));
                 }
 
-                TextureManager::get().register_unmap_texture9(
-                    get().m_device,
-                    texture,
-                    data.rect.pBits,
-                    data.width,
-                    data.height,
-                    data.format,
-                    static_cast<UINT>(data.rect.Pitch)
-                );
+                // Pitch is signed here and unsigned from there on, so a negative one would become
+                // an enormous row length instead of a refused lock.
+                if (data.rect.Pitch > 0)
+                {
+                    TextureManager::get().register_unmap_texture9(
+                        get().m_device,
+                        texture,
+                        data.rect.pBits,
+                        data.width,
+                        data.height,
+                        data.format,
+                        static_cast<UINT>(data.rect.Pitch)
+                    );
+                }
 
                 s_locked_textures.erase(it);
             }

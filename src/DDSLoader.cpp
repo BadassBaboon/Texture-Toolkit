@@ -113,9 +113,21 @@ namespace TextureToolkit
         // channel layout). 32-bit is taken as-is.
         const bool expand_24 = ((header.ddspf.dwFlags & DDPF_FOURCC) == 0) && header.ddspf.dwRGBBitCount == 24;
 
-        if ((header.ddspf.dwFlags & DDPF_FOURCC) == 0 &&
-            (header.ddspf.dwRGBBitCount == 32 || header.ddspf.dwRGBBitCount == 24))
-            fmt = reshade::api::format::r8g8b8a8_unorm;
+        // A legacy 32-bit DDS says which byte is which through its channel masks, and most tools
+        // write B8G8R8A8 (R mask 0x00FF0000). Assuming RGBA regardless loaded every one of those
+        // with red and blue swapped. 24-bit is expanded below and picks its order from the masks
+        // the same way.
+        if ((header.ddspf.dwFlags & DDPF_FOURCC) == 0 && header.ddspf.dwRGBBitCount == 32)
+        {
+            const bool bgra = (header.ddspf.dwRBitMask == 0x00FF0000u &&
+                               header.ddspf.dwBBitMask == 0x000000FFu);
+            fmt = bgra ? reshade::api::format::b8g8r8a8_unorm
+                       : reshade::api::format::r8g8b8a8_unorm;
+        }
+        else if ((header.ddspf.dwFlags & DDPF_FOURCC) == 0 && header.ddspf.dwRGBBitCount == 24)
+        {
+            fmt = reshade::api::format::r8g8b8a8_unorm; // expanded to 32-bit using the masks below
+        }
 
         if (fmt == reshade::api::format::unknown)
             fmt = reshade::api::format::r8g8b8a8_unorm;

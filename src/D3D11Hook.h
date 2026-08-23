@@ -51,6 +51,8 @@ namespace TextureToolkit
             ID3D11Device **, D3D_FEATURE_LEVEL *, ID3D11DeviceContext **);
 
         typedef HRESULT(WINAPI *CreateDXGIFactory_t)(REFIID, void **);
+        // DXGI 1.3. Modern games call this one, and it takes a Flags argument the others do not.
+        typedef HRESULT(WINAPI *CreateDXGIFactory2_t)(UINT, REFIID, void **);
 
         typedef HRESULT(STDMETHODCALLTYPE *CreateSwapChain_t)(IDXGIFactory *, IUnknown *, DXGI_SWAP_CHAIN_DESC *, IDXGISwapChain **);
         typedef HRESULT(STDMETHODCALLTYPE *CreateSwapChainForHwnd_t)(IDXGIFactory2 *, IUnknown *, HWND, const DXGI_SWAP_CHAIN_DESC1 *, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *, IDXGIOutput *, IDXGISwapChain1 **);
@@ -72,6 +74,7 @@ namespace TextureToolkit
 
         static HRESULT WINAPI Hooked_CreateDXGIFactory(REFIID riid, void **ppFactory);
         static HRESULT WINAPI Hooked_CreateDXGIFactory1(REFIID riid, void **ppFactory);
+        static HRESULT WINAPI Hooked_CreateDXGIFactory2(UINT Flags, REFIID riid, void **ppFactory);
 
         static HRESULT STDMETHODCALLTYPE Hooked_CreateSwapChain(IDXGIFactory *factory, IUnknown *pDevice, DXGI_SWAP_CHAIN_DESC *pDesc, IDXGISwapChain **ppSwapChain);
         static HRESULT STDMETHODCALLTYPE Hooked_CreateSwapChainForHwnd(IDXGIFactory2 *factory, IUnknown *pDevice, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1 *pDesc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *pFullscreenDesc, IDXGIOutput *pRestrictToOutput, IDXGISwapChain1 **ppSwapChain);
@@ -96,6 +99,7 @@ namespace TextureToolkit
         D3D11CreateDevice_t m_orig_create_device = nullptr;
         CreateDXGIFactory_t m_orig_create_dxgi_factory = nullptr;
         CreateDXGIFactory_t m_orig_create_dxgi_factory1 = nullptr;
+        CreateDXGIFactory2_t m_orig_create_dxgi_factory2 = nullptr;
 
         typedef HRESULT(STDMETHODCALLTYPE *CreateTexture2D_t)(ID3D11Device *, const D3D11_TEXTURE2D_DESC *, const D3D11_SUBRESOURCE_DATA *, ID3D11Texture2D **);
         CreateTexture2D_t m_orig_create_texture2d = nullptr;

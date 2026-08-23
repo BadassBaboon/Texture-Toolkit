@@ -109,6 +109,17 @@ namespace TextureToolkit
                 Logger::get().info("[D3D11Hook] CreateDXGIFactory API & IAT hooks installed successfully.");
             }
 
+            // CreateDXGIFactory2 (DXGI 1.3) is what a modern game actually calls. Without it we
+            // never see the factory that creates the real swapchain, and fall back to a throwaway
+            // device+swapchain instead -- the Deus Ex: Mankind Divided symptom exactly.
+            void *pCreateDXGIFactory2 = reinterpret_cast<void *>(GetProcAddress(dxgi_module, "CreateDXGIFactory2"));
+            if (pCreateDXGIFactory2 != nullptr)
+            {
+                HookManager::get().create_hook(pCreateDXGIFactory2, &Hooked_CreateDXGIFactory2, reinterpret_cast<void **>(&m_orig_create_dxgi_factory2));
+                IATHook::hook_all_modules("dxgi.dll", "CreateDXGIFactory2", &Hooked_CreateDXGIFactory2, reinterpret_cast<void **>(&m_orig_create_dxgi_factory2));
+                Logger::get().info("[D3D11Hook] CreateDXGIFactory2 API & IAT hooks installed successfully.");
+            }
+
             void *pCreateDXGIFactory1 = reinterpret_cast<void *>(GetProcAddress(dxgi_module, "CreateDXGIFactory1"));
             if (pCreateDXGIFactory1 != nullptr)
             {
@@ -605,6 +616,22 @@ namespace TextureToolkit
         if (get().m_orig_create_dxgi_factory1)
         {
             hr = get().m_orig_create_dxgi_factory1(riid, ppFactory);
+        }
+
+        if (SUCCEEDED(hr) && ppFactory != nullptr && *ppFactory != nullptr)
+        {
+            get().hook_dxgi_factory(static_cast<IDXGIFactory *>(*ppFactory));
+        }
+        return hr;
+    }
+
+    HRESULT WINAPI D3D11Hook::Hooked_CreateDXGIFactory2(UINT Flags, REFIID riid, void **ppFactory)
+    {
+        Logger::get().info("[D3D11Hook] CreateDXGIFactory2 was called by the game!");
+        HRESULT hr = E_FAIL;
+        if (get().m_orig_create_dxgi_factory2)
+        {
+            hr = get().m_orig_create_dxgi_factory2(Flags, riid, ppFactory);
         }
 
         if (SUCCEEDED(hr) && ppFactory != nullptr && *ppFactory != nullptr)

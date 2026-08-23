@@ -59,7 +59,8 @@ namespace TextureToolkit
         std::string filepath_injected;
 
         uint64_t replacement_handle = 0;
-        uint64_t last_seen_frame = 0;
+        uint64_t last_seen_frame = 0;   // scene-visibility test (per-frame)
+        uint64_t last_seen_ticks = 0;   // eviction age (wall clock, so it is framerate independent)
     };
 
     class TextureManager
@@ -148,6 +149,7 @@ namespace TextureToolkit
 
         mutable std::mutex m_mutex;
         uint64_t m_frame_count = 0;
+        uint64_t m_next_eviction_ticks = 0;
 
         // Active-scene tracking is keyed by content hash (immune to driver pointer reuse).
         std::unordered_set<uint64_t> m_current_frame_hashes;
@@ -237,7 +239,7 @@ namespace TextureToolkit
 
         // Drops long-unseen tracked textures so the map does not grow without bound over a
         // long session. Caller MUST hold m_mutex.
-        void evict_stale_textures();
+        void evict_stale_textures(uint64_t now_ticks);
 
         std::filesystem::path find_injection_path(uint64_t hash);
     };

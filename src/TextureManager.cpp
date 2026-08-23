@@ -3,6 +3,7 @@
 #include "D3D9Hook.h"
 #include "D3D11Hook.h"
 #include "DDSLoader.h"
+#include "ScopedFlag.h"
 #include "Logger.h"
 #include <windows.h>
 #include <sstream>
@@ -514,7 +515,7 @@ namespace TextureToolkit
             sd.SysMemSlicePitch = dds.slice_pitches[0];
 
             ID3D11Texture2D *tex = nullptr;
-            D3D11Hook::s_inside_injection = true;
+            ScopedFlag no_reentry(D3D11Hook::s_inside_injection);
             HRESULT hr = dev->CreateTexture2D(&desc, &sd, &tex);
             if (SUCCEEDED(hr) && tex != nullptr)
             {
@@ -525,7 +526,6 @@ namespace TextureToolkit
                 hr = dev->CreateShaderResourceView(tex, &svd, &m_file_preview_srv11);
                 tex->Release();
             }
-            D3D11Hook::s_inside_injection = false;
             return reinterpret_cast<uint64_t>(m_file_preview_srv11);
         }
 
@@ -539,7 +539,7 @@ namespace TextureToolkit
             return 0;
 
         IDirect3DTexture9 *tex = nullptr;
-        D3D9Hook::s_inside_injection = true;
+        ScopedFlag no_reentry(D3D9Hook::s_inside_injection);
         if (SUCCEEDED(dev->CreateTexture(dds.width, dds.height, 1, 0, fmt, D3DPOOL_MANAGED, &tex, nullptr)) && tex != nullptr)
         {
             D3DLOCKED_RECT r = {};
@@ -579,7 +579,6 @@ namespace TextureToolkit
                 tex->Release();
             }
         }
-        D3D9Hook::s_inside_injection = false;
         return reinterpret_cast<uint64_t>(m_file_preview_tex9);
     }
 
@@ -606,6 +605,7 @@ namespace TextureToolkit
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         m_frame_count++;
+        const uint64_t now_ticks = GetTickCount64();
 
         m_active_frame_hashes = m_current_frame_hashes;
         m_current_frame_hashes.clear();
@@ -614,33 +614,40 @@ namespace TextureToolkit
         {
             auto it = m_tracked_textures.find(hash);
             if (it != m_tracked_textures.end())
+            {
                 it->second.last_seen_frame = m_frame_count;
+                it->second.last_seen_ticks = now_ticks;
+            }
         }
 
-        // Trim the tracked list occasionally (every ~5s at 60 fps) so it stays bounded.
-        if (m_frame_count % 300 == 0)
-            evict_stale_textures();
+        // Trim the tracked list on a timer, not a frame count: both the interval and the age below
+        // are meant in seconds, and a frame count sweeps eight times as often at 240 fps as at 30.
+        if (now_ticks >= m_next_eviction_ticks)
+        {
+            m_next_eviction_ticks = now_ticks + 5000; // every 5 seconds
+            evict_stale_textures(now_ticks);
+        }
 
         process_pending_injections();
         process_readback_queue();
     }
 
-    void TextureManager::evict_stale_textures()
+    void TextureManager::evict_stale_textures(uint64_t now_ticks)
     {
-        // Remove textures not drawn for a while. Keep anything with a loaded replacement,
-        // the texture currently selected for preview, and any hash that has an inject file,
-        // so injected and selected textures never disappear from the panel.
-        constexpr uint64_t kEvictAgeFrames = 3600; // ~1 minute at 60 fps
-        if (m_frame_count < kEvictAgeFrames)
+        // Remove textures not drawn for a while. Keep anything with a loaded replacement, the
+        // texture currently selected for preview, and any hash that has an inject file, so injected
+        // and selected textures never disappear from the panel.
+        constexpr uint64_t kEvictAgeMs = 60 * 1000; // one minute, at any framerate
+        if (now_ticks < kEvictAgeMs)
             return;
 
         for (auto it = m_tracked_textures.begin(); it != m_tracked_textures.end();)
         {
             const TextureDetails &d = it->second;
-            bool stale = d.last_seen_frame + kEvictAgeFrames < m_frame_count;
-            bool keep = d.replacement_handle != 0 ||
-                        it->first == m_preview_target_hash ||
-                        m_injected_files.find(it->first) != m_injected_files.end();
+            const bool stale = d.last_seen_ticks + kEvictAgeMs < now_ticks;
+            const bool keep = d.replacement_handle != 0 ||
+                              it->first == m_preview_target_hash ||
+                              m_injected_files.find(it->first) != m_injected_files.end();
 
             if (stale && !keep)
                 it = m_tracked_textures.erase(it);
@@ -651,56 +658,70 @@ namespace TextureToolkit
 
     void TextureManager::rescan_injected()
     {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        release_replacements();
-        m_injected_files.clear();
-        m_failed_injections.clear(); // retry files that were bad last time; they may be fixed now
-        m_pending_injections.clear();
+        // Walk the directory WITHOUT the manager lock. The bind hooks take that lock on the render
+        // thread, so scanning a slow disk (or a resource root on a network share) while holding it
+        // stalls texture tracking for as long as the scan takes. Build the new map first, then swap.
+        std::unordered_map<uint64_t, std::filesystem::path> found;
 
-        // Replacements are rebuilt after the next time each texture is drawn (flagged by
-        // note_pending_injection, built by process_pending_injections), so newly added DDS
-        // files apply without a restart.
-        for (auto &pair : m_tracked_textures)
+        std::error_code scan_ec;
+        if (std::filesystem::exists(m_inject_dir, scan_ec) && !scan_ec)
         {
-            pair.second.replacement_handle = 0;
-            pair.second.repl_width = 0;
-            pair.second.repl_height = 0;
-            pair.second.filepath_injected.clear();
-            if (pair.second.status == TextureStatus::INJECTED)
-                pair.second.status = TextureStatus::ORIGINAL;
-        }
-
-        if (!std::filesystem::exists(m_inject_dir))
-            return;
-
-        for (const auto &entry : std::filesystem::directory_iterator(m_inject_dir))
-        {
-            if (!entry.is_regular_file())
-                continue;
-
-            std::string ext = entry.path().extension().string();
-            std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-
-            // DDS-only injection for maximum format/compatibility safety.
-            if (ext != ".dds")
-                continue;
-
-            std::string stem = entry.path().stem().string();
-            if (stem.rfind("0x", 0) == 0 || stem.rfind("0X", 0) == 0)
-                stem = stem.substr(2);
-
-            try
+            for (std::filesystem::directory_iterator it(m_inject_dir, scan_ec), end_it; it != end_it && !scan_ec; it.increment(scan_ec))
             {
-                uint64_t hash = std::stoull(stem, nullptr, 16);
-                m_injected_files[hash] = entry.path();
-            }
-            catch (...)
-            {
-                // Ignore non-hex filenames
+                const std::filesystem::directory_entry &entry = *it;
+                if (!entry.is_regular_file(scan_ec) || scan_ec)
+                    continue;
+
+                std::string ext = entry.path().extension().string();
+                std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+                if (ext != ".dds") // DDS-only injection, for format safety
+                    continue;
+
+                std::string stem = entry.path().stem().string();
+                const bool prefixed = (stem.rfind("0x", 0) == 0 || stem.rfind("0X", 0) == 0);
+                if (prefixed)
+                    stem = stem.substr(2);
+
+                try
+                {
+                    const uint64_t hash = std::stoull(stem, nullptr, 16);
+                    // Two files naming one hash must resolve the same way every run, not by
+                    // directory order: the unprefixed spelling wins.
+                    auto existing = found.find(hash);
+                    if (existing == found.end())
+                        found.emplace(hash, entry.path());
+                    else if (!prefixed)
+                        existing->second = entry.path();
+                }
+                catch (...)
+                {
+                    // Ignore non-hex filenames
+                }
             }
         }
 
-        Logger::get().info("[TextureManager] Scanned " + std::to_string(m_injected_files.size()) + " DDS replacement file(s) in TT/inject.");
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            release_replacements();
+            m_injected_files.swap(found);
+            m_failed_injections.clear(); // retry files that were bad last time; they may be fixed now
+            m_pending_injections.clear();
+
+            // Replacements are rebuilt after the next time each texture is drawn (flagged by
+            // note_pending_injection, built by process_pending_injections), so newly added DDS
+            // files apply without a restart.
+            for (auto &pair : m_tracked_textures)
+            {
+                pair.second.replacement_handle = 0;
+                pair.second.repl_width = 0;
+                pair.second.repl_height = 0;
+                pair.second.filepath_injected.clear();
+                if (pair.second.status == TextureStatus::INJECTED)
+                    pair.second.status = TextureStatus::ORIGINAL;
+            }
+
+            Logger::get().info("[TextureManager] Scanned " + std::to_string(m_injected_files.size()) + " DDS replacement file(s) in TT/inject.");
+        }
     }
 
     std::filesystem::path TextureManager::find_injection_path(uint64_t hash)
@@ -964,6 +985,7 @@ namespace TextureToolkit
                 : width * height * 4;
         }
         details.last_seen_frame = m_frame_count;
+        details.last_seen_ticks = GetTickCount64();
 
         std::filesystem::path inject_path = find_injection_path(hash);
         if (enable_injection && !inject_path.empty() &&
@@ -986,6 +1008,8 @@ namespace TextureToolkit
                 append_tight_level(levels, pixel_data, pitch, static_cast<reshade::api::format>(dxgi_fmt),
                                    dxgi_format_is_compressed(dxgi_fmt), width, height);
                 dump_texture(hash, width, height, dxgi_fmt, std::move(levels));
+                if (m_tracked_textures[hash].status != TextureStatus::INJECTED)
+                    if (m_tracked_textures[hash].status != TextureStatus::INJECTED)
                 m_tracked_textures[hash].status = TextureStatus::DUMPED;
             }
         }
@@ -1027,7 +1051,7 @@ namespace TextureToolkit
                         }
 
                         IDirect3DTexture9 *highres_tex = nullptr;
-                        D3D9Hook::s_inside_injection = true;
+                        ScopedFlag no_reentry(D3D9Hook::s_inside_injection);
                         HRESULT hr = device->CreateTexture(
                             dds.width, dds.height, static_cast<UINT>(mips.size()), 0,
                             d3d9_target_fmt, D3DPOOL_MANAGED, &highres_tex, nullptr);
@@ -1104,7 +1128,6 @@ namespace TextureToolkit
                         {
                             Logger::get().error("[TextureManager] Failed to create high-res replacement D3D9 texture for 0x" + format_hash_hex(hash));
                         }
-                        D3D9Hook::s_inside_injection = false;
                     }
                 }
                 else
@@ -1269,6 +1292,7 @@ namespace TextureToolkit
         details.usage = static_cast<uint32_t>(orig_desc.Usage);
         details.data_size = compute_texture_bytes(reshade_fmt, width, height, details.mip_levels);
         details.last_seen_frame = m_frame_count;
+        details.last_seen_ticks = GetTickCount64();
 
         std::filesystem::path inject_path = find_injection_path(hash);
         if (enable_injection && !inject_path.empty() &&
@@ -1299,7 +1323,8 @@ namespace TextureToolkit
                                    dxgi_format_is_compressed(format), width, height);
             }
             dump_texture(hash, width, height, format, std::move(levels));
-            m_tracked_textures[hash].status = TextureStatus::DUMPED;
+            if (m_tracked_textures[hash].status != TextureStatus::INJECTED)
+                m_tracked_textures[hash].status = TextureStatus::DUMPED;
         }
     }
 
@@ -1362,7 +1387,7 @@ namespace TextureToolkit
                     }
 
                     ID3D11Texture2D *highres_tex = nullptr;
-                    D3D11Hook::s_inside_injection = true;
+                    ScopedFlag no_reentry(D3D11Hook::s_inside_injection);
                     HRESULT hr = device->CreateTexture2D(&desc, subres_data.data(), &highres_tex);
                     if (SUCCEEDED(hr) && highres_tex != nullptr)
                     {
@@ -1395,7 +1420,6 @@ namespace TextureToolkit
                     {
                         Logger::get().error("[TextureManager] Failed to create DX11 replacement texture for 0x" + format_hash_hex(hash) + ", HRESULT: " + std::to_string(hr));
                     }
-                    D3D11Hook::s_inside_injection = false;
                 }
             }
             else
@@ -1529,7 +1553,9 @@ namespace TextureToolkit
                 auto it = m_tracked_textures.find(req.hash);
                 if (it != m_tracked_textures.end())
                 {
-                    it->second.status = TextureStatus::DUMPED;
+                    // Dumping an injected texture must not hide that it is injected.
+                    if (it->second.status != TextureStatus::INJECTED)
+                        it->second.status = TextureStatus::DUMPED;
                     it->second.filepath_dumped = path;
                 }
             }
@@ -1566,7 +1592,7 @@ namespace TextureToolkit
             // and request_dump already holds it on this thread, so that recursive lock is
             // undefined behaviour (observed as a crash right after the .dds was written).
             ID3D11Texture2D *staging_tex = nullptr;
-            D3D11Hook::s_inside_injection = true;
+            ScopedFlag no_reentry(D3D11Hook::s_inside_injection);
             HRESULT hr = device->CreateTexture2D(&staging, nullptr, &staging_tex);
 
             if (SUCCEEDED(hr) && staging_tex != nullptr)
@@ -1608,7 +1634,6 @@ namespace TextureToolkit
                 path = write_dump_dds_mips(hash, desc.Width, desc.Height, desc.Format, levels);
                 staging_tex->Release();
             }
-            D3D11Hook::s_inside_injection = false;
             tex2d->Release();
         }
         return path;
@@ -1629,7 +1654,7 @@ namespace TextureToolkit
         {
             DXGI_FORMAT dxgi = d3d9_format_to_dxgi(sd.Format);
 
-            D3D9Hook::s_inside_injection = true;
+            ScopedFlag no_reentry(D3D9Hook::s_inside_injection);
 
             D3DLOCKED_RECT lr = {};
             if (dxgi != DXGI_FORMAT_UNKNOWN && SUCCEEDED(tex->LockRect(0, &lr, nullptr, D3DLOCK_READONLY)))
@@ -1698,7 +1723,6 @@ namespace TextureToolkit
                 }
             }
 
-            D3D9Hook::s_inside_injection = false;
         }
 
         tex->Release();
@@ -1783,8 +1807,9 @@ namespace TextureToolkit
         int budget = 8;
         while (!m_readback_queue.empty() && budget-- > 0)
         {
-            PendingReadback rb = m_readback_queue.back();
-            m_readback_queue.pop_back();
+            // FIFO: with LIFO a large Dump All served the newest first and starved the oldest.
+            PendingReadback rb = m_readback_queue.front();
+            m_readback_queue.erase(m_readback_queue.begin());
 
             std::string path;
             if (rb.srv11 != nullptr)
@@ -1809,7 +1834,9 @@ namespace TextureToolkit
                 auto it = m_tracked_textures.find(rb.hash);
                 if (it != m_tracked_textures.end())
                 {
-                    it->second.status = TextureStatus::DUMPED;
+                    // Dumping an injected texture must not hide that it is injected.
+                    if (it->second.status != TextureStatus::INJECTED)
+                        it->second.status = TextureStatus::DUMPED;
                     it->second.filepath_dumped = path;
                 }
             }

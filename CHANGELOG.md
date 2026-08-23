@@ -76,9 +76,11 @@ First public release.
 ### Compatibility
 - The hash is 64-bit and covers mip 0's tightly-packed rows, never the driver's row padding, so a
   hash means the same thing on every machine. Files are named with 16 uppercase hex digits.
-- This is the first release, so nothing published predates it. From 1.0.0 onward the hash, the file
-  naming and the `<ResourceRoot>/inject|dump` layout are fixed; the set of recognised pixel formats
-  may only grow.
+- Nothing published predates this release, so no existing mod needs renaming. From 1.0.0 the hash,
+  the 16-hex file naming and the `<ResourceRoot>/inject|dump` layout are fixed. The set of
+  recognised pixel formats may only grow: a format Texture Toolkit cannot identify is skipped
+  rather than guessed at, so adding one later makes new textures moddable without changing a hash
+  that already exists.
 
 [Unreleased]: https://github.com/BadassBaboon/Texture-Toolkit/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/BadassBaboon/Texture-Toolkit/releases/tag/v1.0.0

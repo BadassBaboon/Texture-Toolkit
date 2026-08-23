@@ -2,6 +2,12 @@
   <img src="texture-toolkit.png" alt="Texture Toolkit" width="640">
 </p>
 
+<p align="center">
+  <a href="https://github.com/BadassBaboon/Texture-Toolkit/releases/latest"><img src="https://img.shields.io/github/v/release/BadassBaboon/Texture-Toolkit?label=download" alt="Latest release"></a>
+  <a href="https://github.com/BadassBaboon/Texture-Toolkit/actions/workflows/build.yml"><img src="https://github.com/BadassBaboon/Texture-Toolkit/actions/workflows/build.yml/badge.svg" alt="Build"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT"></a>
+</p>
+
 Texture Toolkit dumps and replaces textures at runtime in 32-bit and 64-bit Direct3D 9 and Direct3D 11 games on Windows. It loads as an `.asi` plugin through Ultimate ASI Loader, or as a proxy DLL renamed to `dinput8.dll`, `d3d9.dll`, or `dxgi.dll`. An in-game panel lists the textures in the current scene, shows their format and memory size, and lets you dump or replace them without restarting. It has been tested against Bully: Scholarship Edition (Direct3D 9), Grand Theft Auto IV: Complete Edition (Direct3D 9), Total Overdose (Direct3D 9), Spec Ops: The Line (Direct3D 11), and Need for Speed: The Run (Direct3D 11).
 
 ## How it works
@@ -25,7 +31,7 @@ Storing the hash on the resource, instead of tracking raw pointers, keeps a repl
 
 ## The in-game panel
 
-Press `INSERT` to open it. The left pane lists tracked textures with hash, size, mip count, format, and status: injected (a replacement is bound), pending (an inject file exists but nothing is bound yet), dumped, or original. The filter box matches on hash, dimensions, or format. Hover the list and press `[` or `]` to step through it.
+Press `INSERT` to open it. The left pane lists tracked textures with hash, size, mip count, format, and status: injected (a replacement is bound), SK injected (the same, from a file using Special K's naming), pending (an inject file exists but nothing is bound yet), dumped, or original. The filter box matches on hash, dimensions, or format. Hover the list and press `[` or `]` to step through it.
 
 The right pane inspects the selected texture. The preview shows the injected replacement, the live original while it is on screen, or the dumped `.dds` read back from disk. Below it are the dimensions, mip count, data size, format, the compressed and sRGB flags, and the D3D11 bind, usage, and misc flags. You can copy the hash or dump the texture from here, and drag the divider to resize the two panes.
 
@@ -54,6 +60,8 @@ Output: `build64/Release/TextureToolkit-x64.asi`.
 Match the build to the game: a 32-bit game needs the x86 build.
 
 ## Installing
+
+Download the latest `.asi` from the [releases page](https://github.com/BadassBaboon/Texture-Toolkit/releases/latest). Both architectures are attached to every release and are built by CI from the tagged commit.
 
 1. Copy `TextureToolkit-x86.asi` (32-bit games) or `TextureToolkit-x64.asi` (64-bit games) into the game folder, or into a `plugins/` or `scripts/` folder when using Ultimate ASI Loader. To load it as a proxy instead, rename it to `dinput8.dll`, `d3d9.dll`, or `dxgi.dll`.
 2. Launch the game. Texture Toolkit writes `TextureToolkit.ini` and its log next to the `.asi`, and creates a `TT/` folder next to the executable containing `dump/`, `inject/`, and `imgui.ini`.

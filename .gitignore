@@ -1,8 +1,14 @@
-# Build directories
-build/
-build32/
-build64/
+# Build directories. build*/ covers build/, build32/, build64/ and any ad-hoc variant.
+build*/
+out/
+cmake-build-*/
 bin/
+
+# Dependencies fetched at configure time (FetchContent). These normally land inside a build
+# directory, but the rule is here too so an out-of-tree layout cannot commit a vendored copy of
+# Dear ImGui or MinHook by accident. Note this is _deps (underscore) -- our own deps/ directory
+# holds the vendored ReShade format header and IS tracked on purpose.
+_deps/
 
 # Visual Studio & IDE files
 .vs/
@@ -20,6 +26,9 @@ CMakeFiles/
 cmake_install.cmake
 Makefile
 *.dir/
+CMakeUserPresets.json
+compile_commands.json
+.cache/
 
 # Compiled objects and libraries
 *.obj
@@ -31,6 +40,20 @@ Makefile
 *.ilk
 *.asi
 *.dll
+*.tlog
+
+# Texture Toolkit's own runtime output, in case the plugin is ever run from inside the repo.
+# TT/ is the default ResourceRoot and holds a tester's dump/ and inject/ folders, which can be
+# enormous and are never part of the source tree.
+TextureToolkit.ini
+TextureToolkit.log
+imgui.ini
+TT/
+*.log
+
+# Editor / IDE
+.vscode/
+.idea/
 
 # OS generated files
 Thumbs.db

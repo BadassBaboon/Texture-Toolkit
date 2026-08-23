@@ -151,6 +151,9 @@ namespace TextureToolkit
         uint32_t current_w = out_image.width;
         uint32_t current_h = out_image.height;
 
+        // Only slice 0 is read, even from an array or cubemap file: injection creates plain 2D
+        // textures (see the view-dimension guard), so the other slices would be loaded and never
+        // used. out_image.array_size still reports what the file holds.
         for (uint32_t mip = 0; mip < out_image.mip_levels; ++mip)
         {
             uint32_t row_pitch = reshade::api::format_row_pitch(fmt, current_w);
@@ -219,8 +222,16 @@ namespace TextureToolkit
         return save_dds_multi_mip(filepath, desc, subres);
     }
 
-    bool save_dds_multi_mip(const std::string &filepath, const reshade::api::resource_desc &desc, const std::vector<reshade::api::subresource_data> &subresources)
+    bool save_dds_multi_mip(const std::string &filepath, const reshade::api::resource_desc &desc,
+                            const std::vector<reshade::api::subresource_data> &subresources,
+                            uint32_t mip_levels, uint32_t array_size)
     {
+        if (array_size == 0)
+            array_size = 1;
+        if (mip_levels == 0)
+            mip_levels = static_cast<uint32_t>(subresources.size()) / array_size;
+        if (mip_levels == 0)
+            return false;
         if (subresources.empty() || subresources[0].data == nullptr)
             return false;
 
@@ -236,8 +247,8 @@ namespace TextureToolkit
         header.dwFlags = 0x1 | 0x2 | 0x4 | 0x1000; // DDSD_CAPS | DDSD_HEIGHT | DDSD_WIDTH | DDSD_PIXELFORMAT
         header.dwWidth = desc.texture.width;
         header.dwHeight = desc.texture.height;
-        header.dwDepth = desc.texture.depth_or_layers;
-        header.dwMipMapCount = static_cast<uint32_t>(subresources.size());
+        header.dwDepth = 1;                  // array size lives in the DX10 header, not here
+        header.dwMipMapCount = mip_levels;
 
         if (header.dwMipMapCount > 1)
             header.dwFlags |= 0x20000; // DDSD_MIPMAPCOUNT
@@ -252,15 +263,24 @@ namespace TextureToolkit
         DDS_HEADER_DXT10 dxt10 = {};
         dxt10.dxgiFormat = reshade_format_to_dxgi(desc.texture.format);
         dxt10.resourceDimension = 3; // 2D Texture
-        dxt10.arraySize = 1;
+        dxt10.arraySize = array_size;
 
         file.write(reinterpret_cast<const char *>(&dxt10), sizeof(dxt10));
 
         uint32_t w = desc.texture.width;
         uint32_t h = desc.texture.height;
+        uint32_t level_in_slice = 0;
 
         for (const auto &subres : subresources)
         {
+            if (level_in_slice == mip_levels)   // next array slice starts at the top level again
+            {
+                level_in_slice = 0;
+                w = desc.texture.width;
+                h = desc.texture.height;
+            }
+            ++level_in_slice;
+
             // The reader (load_dds) assumes tightly-packed rows, so we must write at the tight
             // pitch. A source can hand us a larger, padded pitch (D3D11 staging textures are
             // commonly 256-byte aligned); when it does, copy row by row and drop the padding,

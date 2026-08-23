@@ -1674,8 +1674,11 @@ namespace TextureToolkit
     // Dumping every level is what lets a dump be edited and injected straight back: a compressed
     // replacement without its mips cannot have them regenerated, and would alias in motion.
     std::string TextureManager::write_dump_dds_mips(uint64_t hash, UINT width, UINT height, DXGI_FORMAT format,
-                                                    const std::vector<std::vector<uint8_t>> &levels)
+                                                    const std::vector<std::vector<uint8_t>> &levels,
+                                                    UINT array_size)
     {
+        if (array_size == 0)
+            array_size = 1;
         if (levels.empty() || width == 0 || height == 0)
             return {};
 
@@ -1686,11 +1689,18 @@ namespace TextureToolkit
         std::filesystem::create_directories(m_dump_dir, ec);
         const std::filesystem::path dds_path = m_dump_dir / (format_hash_hex(hash) + ".dds");
 
+        // levels is slice-major: mip_levels entries per array slice, so the mip index restarts
+        // at the top of every slice.
+        const size_t mip_levels = levels.size() / array_size;
+        if (mip_levels == 0)
+            return {};
+
         std::vector<reshade::api::subresource_data> subres(levels.size());
         for (size_t i = 0; i < levels.size(); ++i)
         {
-            const UINT w = (std::max)(1u, width >> i);
-            const UINT h = (std::max)(1u, height >> i);
+            const size_t level = i % mip_levels;
+            const UINT w = (std::max)(1u, width >> level);
+            const UINT h = (std::max)(1u, height >> level);
             UINT row_pitch = reshade::api::format_row_pitch(fmt, w);
             UINT slice_pitch = reshade::api::format_slice_pitch(fmt, row_pitch, h);
             if (slice_pitch == 0)
@@ -1704,10 +1714,10 @@ namespace TextureToolkit
         reshade::api::resource_desc desc;
         desc.texture.width = width;
         desc.texture.height = height;
-        desc.texture.levels = static_cast<uint16_t>(levels.size());
+        desc.texture.levels = static_cast<uint16_t>(mip_levels);
         desc.texture.format = fmt;
 
-        if (!save_dds_multi_mip(dds_path.string(), desc, subres))
+        if (!save_dds_multi_mip(dds_path.string(), desc, subres, static_cast<uint32_t>(mip_levels), array_size))
             return {};
         return dds_path.string();
     }
@@ -1786,10 +1796,15 @@ namespace TextureToolkit
                 const reshade::api::format fmt = static_cast<reshade::api::format>(desc.Format);
                 const bool compressed = dxgi_format_is_compressed(desc.Format);
                 const UINT level_count = (desc.MipLevels > 0) ? desc.MipLevels : 1;
+                // Cubemaps and texture arrays carry more than one slice; D3D indexes them
+                // slice-major, which is also the order DDS stores them in.
+                const UINT slice_count = (desc.ArraySize > 0) ? desc.ArraySize : 1;
 
                 std::vector<std::vector<uint8_t>> levels;
-                levels.reserve(level_count);
+                levels.reserve(static_cast<size_t>(level_count) * slice_count);
 
+                bool readback_ok = true;
+                for (UINT slice = 0; slice < slice_count && readback_ok; ++slice)
                 for (UINT level = 0; level < level_count; ++level)
                 {
                     const UINT w = (std::max)(1u, desc.Width >> level);
@@ -1797,23 +1812,33 @@ namespace TextureToolkit
                     const UINT tight_row = reshade::api::format_row_pitch(fmt, w);
                     const UINT rows = compressed ? ((h + 3) / 4) : h;
                     if (tight_row == 0 || rows == 0)
+                    {
+                        readback_ok = false;
                         break;
+                    }
 
+                    const UINT subresource = D3D11CalcSubresource(level, slice, level_count);
                     D3D11_MAPPED_SUBRESOURCE mapped = {};
-                    if (FAILED(ctx->Map(staging_tex, level, D3D11_MAP_READ, 0, &mapped)) || mapped.pData == nullptr)
+                    if (FAILED(ctx->Map(staging_tex, subresource, D3D11_MAP_READ, 0, &mapped)) || mapped.pData == nullptr)
+                    {
+                        readback_ok = false;
                         break;
+                    }
 
                     std::vector<uint8_t> buf(static_cast<size_t>(tight_row) * rows);
                     const uint8_t *src = static_cast<const uint8_t *>(mapped.pData);
                     for (UINT y = 0; y < rows; ++y)
                         std::memcpy(buf.data() + static_cast<size_t>(y) * tight_row,
                                     src + static_cast<size_t>(y) * mapped.RowPitch, tight_row);
-                    ctx->Unmap(staging_tex, level);
+                    ctx->Unmap(staging_tex, subresource);
 
                     levels.push_back(std::move(buf));
                 }
 
-                path = write_dump_dds_mips(hash, desc.Width, desc.Height, desc.Format, levels);
+                // A partial readback would misalign the slice-major layout, so only write a
+                // complete set.
+                if (readback_ok && levels.size() == static_cast<size_t>(level_count) * slice_count)
+                    path = write_dump_dds_mips(hash, desc.Width, desc.Height, desc.Format, levels, slice_count);
                 staging_tex->Release();
             }
             tex2d->Release();

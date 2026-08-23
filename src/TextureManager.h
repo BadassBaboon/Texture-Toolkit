@@ -240,8 +240,10 @@ namespace TextureToolkit
 
         // Writes a full mip chain (tightly-packed data per level), so a dump can be edited and
         // injected straight back without losing its mips.
+        // `levels` is slice-major: mip_levels entries per array slice (cubemaps are six slices).
         std::string write_dump_dds_mips(uint64_t hash, UINT width, UINT height, DXGI_FORMAT format,
-                                        const std::vector<std::vector<uint8_t>> &levels);
+                                        const std::vector<std::vector<uint8_t>> &levels,
+                                        UINT array_size = 1);
 
         // GPU readback + write for one live resource. Return the file path or empty.
         std::string dump_resource11(uint64_t hash, ID3D11Resource *res);

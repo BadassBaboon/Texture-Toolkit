@@ -12,6 +12,37 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
 
 ## [Unreleased]
 
+### Added
+- **Direct3D 9 textures loaded through D3DX are now tracked.** Games of that era hand a file to
+  `D3DXCreateTextureFromFile*` and never lock the texture themselves, so their art was created but
+  never seen: Street Racing Syndicate creates 1487 textures, 484 of them DXT1/DXT3, and locks two.
+  The six D3DX texture loaders are hooked in whatever `d3dx9_*.dll` the game has already loaded.
+  Nothing is ever loaded by us, so a game that ships no D3DX is untouched.
+- `UpdateSurface` and `StretchRect` carry the content tag from a staged surface to the one the game
+  renders, the way `UpdateTexture` already did. Only whole-surface copies qualify; a partial or
+  scaled blit resamples the pixels and is genuinely a different texture.
+
+### Fixed
+- **Games could stall or freeze while video played or a save loaded.** A texture the game rewrites
+  constantly, such as a video frame, was hashed in full on the game's own thread every time, and
+  every distinct result became another row in the texture list. Saints Row 2's intro produced 268
+  uploads of one 640x360 surface and 134 of a 1280x720 one, 479 distinct hashes in all. None of
+  that work can pay off, because a replacement is matched by content and content that changes every
+  frame can never match a file on disk. A resource rewritten several times in quick succession is
+  now left alone. The test is the rate of change, not the count, so an engine that recycles texture
+  objects between levels keeps working.
+- The Special K hash meant a second full pass over the pixels of every texture uploaded, whether or
+  not any SK-named file was present. It is computed only when one is.
+- Diagnostic logging budgets were per call site and counted calls, so one texture re-locked every
+  frame could spend the whole budget. In the log that prompted this, a 640x480 video surface locked
+  19 times in under a second used every `LockRect` line available and hid the following 30 seconds
+  entirely. Budgets are spent per distinct texture now, and are checked against the verbose setting
+  before any message is built.
+- A surface lock past mip 0 returned from the level-0 guard before its log line, so mip uploads
+  never appeared in the log at all.
+- A lock on a surface with no parent texture (offscreen-plain or render-target) returned silently,
+  which is exactly the case that is hardest to diagnose from a log. It is reported now.
+
 ## [1.0.0] - 2026-08-24
 
 First public release.

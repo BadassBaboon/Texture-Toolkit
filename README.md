@@ -22,6 +22,7 @@ Storing the hash on the resource, instead of tracking raw pointers, keeps a repl
 ## Features
 
 - Direct3D 9 and Direct3D 11, both x86 and x64.
+- Textures that arrive through D3DX (`D3DXCreateTextureFromFile*`) are tracked as well as those uploaded with `LockRect`. Many Direct3D 9 games never lock a texture themselves, and hand the file to D3DX instead. Only a `d3dx9_*.dll` the game has already loaded is hooked.
 - DDS replacement: put `<hash>.dds` in `TT/inject` and it loads without a restart.
 - Mip handling: a replacement is created with the mip count its own file carries. A single-level file replacing a mipmapped texture has its chain filled in when the format is uncompressed, and loads at its top level with a warning when it is not.
 - Dumping to `TT/dump` as `.dds`, with the full mip chain: automatically on load, one at a time from the panel, or every tracked texture at once.

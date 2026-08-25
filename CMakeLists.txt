@@ -103,4 +103,4 @@ target_compile_definitions(TextureToolkit PRIVATE
     ImTextureID=ImU64
 )
 
-target_link_libraries(TextureToolkit PRIVATE Shlwapi d3d9 d3d11 dxgi)
+target_link_libraries(TextureToolkit PRIVATE Shlwapi d3d9 d3d11 dxgi Psapi)

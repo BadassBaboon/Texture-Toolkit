@@ -28,6 +28,40 @@ namespace TextureToolkit
     static const GUID TT_SRV_CACHE_GUID =
         { 0x2f1d8a44, 0x9c63, 0x4e77, { 0xb0, 0xa5, 0x7e, 0x4c, 0x11, 0xd9, 0xf3, 0x26 } };
 
+
+    // Upload history for one resource, so a texture whose pixels change on every upload can be
+    // recognised and left alone.
+    //
+    // A video frame, a render-to-texture readback or a streamed surface is re-uploaded constantly
+    // and hashes differently every time. Hashing it costs a full pass over the pixels on the game's
+    // own thread, and every distinct result becomes another permanent row in the texture list. In a
+    // Saints Row 2 log the logo videos produced 268 uploads of one 640x360 surface and 134 of a
+    // 1280x720 one, 479 distinct hashes in all, which is what made the game unplayable during the
+    // intro and while a save loaded.
+    //
+    // None of that work can pay off: a replacement is matched by content, and content that changes
+    // every frame can never match a file on disk. So after a few uploads that each produce a new
+    // hash, the resource is marked and skipped from then on.
+    // {8D3C6F91-52A7-4B08-8C14-6A9E0D7B4F52}
+    static const GUID TT_UPLOAD_STATS_GUID =
+        { 0x8d3c6f91, 0x52a7, 0x4b08, { 0x8c, 0x14, 0x6a, 0x9e, 0x0d, 0x7b, 0x4f, 0x52 } };
+
+    struct UploadStats
+    {
+        uint64_t last_hash;
+        uint64_t last_change_ticks;
+        uint32_t rapid_changes;    // consecutive content changes that arrived in quick succession
+        uint32_t streaming;        // 1 = give up on this resource
+    };
+
+    // What separates a video from ordinary art is the RATE, not the count. Engines routinely keep a
+    // pool of texture objects and reuse one for completely different art on the next level load;
+    // that is a content change too, and it must stay tracked. Those arrive seconds apart. A video
+    // frame arrives every 16 to 33 milliseconds. Only changes closer together than this count
+    // toward the limit, and one slow change resets the run.
+    static constexpr uint64_t kRapidChangeMs = 250;
+    static constexpr uint32_t kStreamingChangeLimit = 6;
+
     struct SrvBindCache
     {
         uint32_t generation;
@@ -854,6 +888,7 @@ namespace TextureToolkit
 
             m_injected_files.swap(found);
             m_sk_injected_files.swap(found_sk);
+            m_have_sk_files.store(!m_sk_injected_files.empty(), std::memory_order_relaxed);
             m_failed_injections.clear(); // retry files that were bad last time; they may be fixed now
             m_pending_injections.clear();
 
@@ -1109,6 +1144,55 @@ namespace TextureToolkit
         }
     }
 
+
+
+    // Carries the replacement fields of an existing record onto the freshly built one.
+    //
+    // A tracked texture is rebuilt from scratch every time the game re-uploads its pixels, and the
+    // fresh record starts with no replacement on it. The replacement itself lives in the by-hash
+    // map and is untouched, so the texture goes on rendering replaced -- but the record the panel
+    // reads now says otherwise, and an injected texture would show as "Pending" the moment the game
+    // uploaded it a second time. Bully does exactly that.
+    static void carry_replacement_fields(TextureDetails &fresh, const TextureDetails &existing)
+    {
+        fresh.replacement_handle = existing.replacement_handle;
+        fresh.repl_width = existing.repl_width;
+        fresh.repl_height = existing.repl_height;
+        fresh.filepath_injected = existing.filepath_injected;
+        fresh.injected_via_sk_name = existing.injected_via_sk_name;
+        if (existing.status == TextureStatus::INJECTED)
+            fresh.status = TextureStatus::INJECTED;
+    }
+
+    // Folds one upload into a resource's history and decides whether it has become a stream.
+    static void note_upload_change(UploadStats &stats, bool have_stats, uint64_t hash, UINT width, UINT height)
+    {
+        const uint64_t now = GetTickCount64();
+
+        if (have_stats && hash != stats.last_hash)
+        {
+            const uint64_t since = (stats.last_change_ticks == 0) ? kRapidChangeMs : (now - stats.last_change_ticks);
+            if (since < kRapidChangeMs)
+            {
+                if (++stats.rapid_changes >= kStreamingChangeLimit)
+                {
+                    stats.streaming = 1;
+                    Logger::get().debug("[TextureManager] " + std::to_string(width) + "x" + std::to_string(height) +
+                                        " texture rewritten " + std::to_string(stats.rapid_changes) +
+                                        " times in quick succession (video or streamed); no longer tracking it.");
+                }
+            }
+            else
+            {
+                // A slow change is ordinary reuse, not a stream. Start the run again.
+                stats.rapid_changes = 0;
+            }
+            stats.last_change_ticks = now;
+        }
+
+        stats.last_hash = hash;
+    }
+
     void TextureManager::register_unmap_texture9(IDirect3DDevice9 *device, IDirect3DTexture9 *texture, const void *pixel_data, UINT width, UINT height, D3DFORMAT format, UINT pitch)
     {
         if (device == nullptr || texture == nullptr || pixel_data == nullptr || width == 0 || height == 0)
@@ -1117,11 +1201,26 @@ namespace TextureToolkit
         if (filter_small_textures && (width < 16 || height < 16))
             return;
 
+        // Read the upload history BEFORE hashing: the whole point is to not pay for the pass.
+        UploadStats stats = {};
+        DWORD stats_size = sizeof(stats);
+        const bool have_stats =
+            SUCCEEDED(texture->GetPrivateData(TT_UPLOAD_STATS_GUID, &stats, &stats_size)) &&
+            stats_size == sizeof(stats);
+        if (have_stats && stats.streaming != 0)
+            return;
+
         uint64_t hash = calculate_d3d9_pixel_hash(pixel_data, width, height, format, pitch);
         if (hash == 0)
             return;
 
-        const uint32_t sk_hash = accept_sk_names
+        note_upload_change(stats, have_stats, hash, width, height);
+        texture->SetPrivateData(TT_UPLOAD_STATS_GUID, &stats, sizeof(stats), 0);
+        if (stats.streaming != 0)
+            return;
+
+        // Only worth a second full pass over the pixels when an SK-named file could actually match.
+        const uint32_t sk_hash = (accept_sk_names && m_have_sk_files.load(std::memory_order_relaxed))
             ? calculate_d3d9_sk_hash(pixel_data, width, height, format, pitch)
             : 0u;
 
@@ -1166,6 +1265,14 @@ namespace TextureToolkit
             m_d3d9_replacements.find(hash) == m_d3d9_replacements.end())
         {
             build_replacement9(device, hash, inject_path, original_levels, details);
+        }
+        else if (m_d3d9_replacements.find(hash) != m_d3d9_replacements.end())
+        {
+            // Already built on an earlier upload, so nothing is created again -- but the record
+            // being written below must still say so.
+            auto prev = m_tracked_textures.find(hash);
+            if (prev != m_tracked_textures.end())
+                carry_replacement_fields(details, prev->second);
         }
 
         m_tracked_textures[hash] = details;
@@ -1484,11 +1591,26 @@ namespace TextureToolkit
             return;
         const UINT rows = dxgi_format_is_compressed(format) ? ((height + 3) / 4) : height;
 
+        // Upload history first, so a streamed surface stops costing a pass over its pixels.
+        UploadStats stats = {};
+        UINT stats_size = sizeof(stats);
+        const bool have_stats =
+            SUCCEEDED(resource->GetPrivateData(TT_UPLOAD_STATS_GUID, &stats_size, &stats)) &&
+            stats_size == sizeof(stats);
+        if (have_stats && stats.streaming != 0)
+            return;
+
         uint64_t hash = compute_hash64_rows(static_cast<const uint8_t *>(pixel_data), pitch, tight_row, rows);
         if (hash == 0)
             return;
 
-        const uint32_t sk_hash = accept_sk_names
+        note_upload_change(stats, have_stats, hash, width, height);
+        resource->SetPrivateData(TT_UPLOAD_STATS_GUID, sizeof(stats), &stats);
+        if (stats.streaming != 0)
+            return;
+
+        // Only worth a second full pass over the pixels when an SK-named file could actually match.
+        const uint32_t sk_hash = (accept_sk_names && m_have_sk_files.load(std::memory_order_relaxed))
             ? compute_crc32c_rows(static_cast<const uint8_t *>(pixel_data), pitch, tight_row, rows)
             : 0u;
 
@@ -1539,6 +1661,15 @@ namespace TextureToolkit
         {
             build_replacement11(device, hash, inject_path, original_levels, details);
         }
+        else if (m_d3d11_replacements.find(hash) != m_d3d11_replacements.end())
+        {
+            // See the Direct3D 9 path: the replacement survives a re-upload, and so must the
+            // record that reports it.
+            auto prev = m_tracked_textures.find(hash);
+            if (prev != m_tracked_textures.end())
+                carry_replacement_fields(details, prev->second);
+        }
+
 
         m_tracked_textures[hash] = details;
 

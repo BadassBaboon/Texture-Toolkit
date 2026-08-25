@@ -18,6 +18,13 @@ namespace TextureToolkit
         void hook_d3d9_interface(IDirect3D9 *d3d9);
         void hook_device_interface(IDirect3DDevice9 *device);
 
+        // Hooks the D3DX texture loaders in whatever d3dx9_*.dll the game has ALREADY loaded.
+        // Nothing is ever LoadLibrary'd: a game that does not ship D3DX keeps the lock-based path
+        // untouched. Games from the D3DX era hand a file to D3DX and never lock the texture
+        // themselves, so without this their art is created but never seen (Street Racing Syndicate
+        // creates 1487 textures, including 484 DXT1/DXT3, and locks two of them).
+        void hook_d3dx();
+
         IDirect3DDevice9 *get_device() const { return m_device; }
         bool overlay_ready() const { return m_imgui_initialized; }
 
@@ -46,6 +53,18 @@ namespace TextureToolkit
         typedef HRESULT(STDMETHODCALLTYPE *SetTexture_t)(IDirect3DDevice9 *, DWORD, IDirect3DBaseTexture9 *);
         typedef HRESULT(STDMETHODCALLTYPE *UpdateTexture_t)(IDirect3DDevice9 *, IDirect3DBaseTexture9 *, IDirect3DBaseTexture9 *);
 
+        typedef HRESULT(STDMETHODCALLTYPE *UpdateSurface_t)(IDirect3DDevice9 *, IDirect3DSurface9 *, const RECT *, IDirect3DSurface9 *, const POINT *);
+        typedef HRESULT(STDMETHODCALLTYPE *StretchRect_t)(IDirect3DDevice9 *, IDirect3DSurface9 *, const RECT *, IDirect3DSurface9 *, const RECT *, D3DTEXTUREFILTERTYPE);
+
+        // D3DX loaders. Declared with void* for the D3DX-only structs (D3DXIMAGE_INFO, PALETTEENTRY)
+        // so none of this needs the D3DX SDK headers, which are not a dependency of this project.
+        typedef HRESULT(WINAPI *D3DXCreateTextureFromFileInMemoryEx_t)(IDirect3DDevice9 *, const void *, UINT, UINT, UINT, UINT, DWORD, D3DFORMAT, D3DPOOL, DWORD, DWORD, D3DCOLOR, void *, void *, IDirect3DTexture9 **);
+        typedef HRESULT(WINAPI *D3DXCreateTextureFromFileInMemory_t)(IDirect3DDevice9 *, const void *, UINT, IDirect3DTexture9 **);
+        typedef HRESULT(WINAPI *D3DXCreateTextureFromFileExA_t)(IDirect3DDevice9 *, const char *, UINT, UINT, UINT, DWORD, D3DFORMAT, D3DPOOL, DWORD, DWORD, D3DCOLOR, void *, void *, IDirect3DTexture9 **);
+        typedef HRESULT(WINAPI *D3DXCreateTextureFromFileExW_t)(IDirect3DDevice9 *, const wchar_t *, UINT, UINT, UINT, DWORD, D3DFORMAT, D3DPOOL, DWORD, DWORD, D3DCOLOR, void *, void *, IDirect3DTexture9 **);
+        typedef HRESULT(WINAPI *D3DXCreateTextureFromFileA_t)(IDirect3DDevice9 *, const char *, IDirect3DTexture9 **);
+        typedef HRESULT(WINAPI *D3DXCreateTextureFromFileW_t)(IDirect3DDevice9 *, const wchar_t *, IDirect3DTexture9 **);
+
         // Surface Hooks
         typedef HRESULT(STDMETHODCALLTYPE *SurfaceLockRect_t)(IDirect3DSurface9 *, D3DLOCKED_RECT *, const RECT *, DWORD);
         typedef HRESULT(STDMETHODCALLTYPE *SurfaceUnlockRect_t)(IDirect3DSurface9 *);
@@ -62,6 +81,19 @@ namespace TextureToolkit
         static HRESULT STDMETHODCALLTYPE Hooked_UnlockRect(IDirect3DTexture9 *texture, UINT Level);
         static HRESULT STDMETHODCALLTYPE Hooked_SetTexture(IDirect3DDevice9 *device, DWORD Stage, IDirect3DBaseTexture9 *pTexture);
         static HRESULT STDMETHODCALLTYPE Hooked_UpdateTexture(IDirect3DDevice9 *device, IDirect3DBaseTexture9 *pSourceTexture, IDirect3DBaseTexture9 *pDestinationTexture);
+
+        static HRESULT STDMETHODCALLTYPE Hooked_UpdateSurface(IDirect3DDevice9 *device, IDirect3DSurface9 *pSourceSurface, const RECT *pSourceRect, IDirect3DSurface9 *pDestinationSurface, const POINT *pDestPoint);
+        static HRESULT STDMETHODCALLTYPE Hooked_StretchRect(IDirect3DDevice9 *device, IDirect3DSurface9 *pSourceSurface, const RECT *pSourceRect, IDirect3DSurface9 *pDestSurface, const RECT *pDestRect, D3DTEXTUREFILTERTYPE Filter);
+
+        static HRESULT WINAPI Hooked_D3DXCreateTextureFromFileInMemoryEx(IDirect3DDevice9 *device, const void *src, UINT size, UINT w, UINT h, UINT mips, DWORD usage, D3DFORMAT fmt, D3DPOOL pool, DWORD filter, DWORD mipfilter, D3DCOLOR key, void *info, void *palette, IDirect3DTexture9 **ppTexture);
+        static HRESULT WINAPI Hooked_D3DXCreateTextureFromFileInMemory(IDirect3DDevice9 *device, const void *src, UINT size, IDirect3DTexture9 **ppTexture);
+        static HRESULT WINAPI Hooked_D3DXCreateTextureFromFileExA(IDirect3DDevice9 *device, const char *file, UINT w, UINT h, UINT mips, DWORD usage, D3DFORMAT fmt, D3DPOOL pool, DWORD filter, DWORD mipfilter, D3DCOLOR key, void *info, void *palette, IDirect3DTexture9 **ppTexture);
+        static HRESULT WINAPI Hooked_D3DXCreateTextureFromFileExW(IDirect3DDevice9 *device, const wchar_t *file, UINT w, UINT h, UINT mips, DWORD usage, D3DFORMAT fmt, D3DPOOL pool, DWORD filter, DWORD mipfilter, D3DCOLOR key, void *info, void *palette, IDirect3DTexture9 **ppTexture);
+        static HRESULT WINAPI Hooked_D3DXCreateTextureFromFileA(IDirect3DDevice9 *device, const char *file, IDirect3DTexture9 **ppTexture);
+        static HRESULT WINAPI Hooked_D3DXCreateTextureFromFileW(IDirect3DDevice9 *device, const wchar_t *file, IDirect3DTexture9 **ppTexture);
+
+        // Reads back a texture D3DX has just filled and registers it the way an unlock would.
+        static void register_loaded_texture(IDirect3DTexture9 *texture, const char *origin);
 
         static HRESULT STDMETHODCALLTYPE Hooked_SurfaceLockRect(IDirect3DSurface9 *surface, D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD Flags);
         static HRESULT STDMETHODCALLTYPE Hooked_SurfaceUnlockRect(IDirect3DSurface9 *surface);
@@ -91,5 +123,15 @@ namespace TextureToolkit
 
         SurfaceLockRect_t m_orig_surface_lock_rect = nullptr;
         SurfaceUnlockRect_t m_orig_surface_unlock_rect = nullptr;
+        UpdateSurface_t m_orig_update_surface = nullptr;
+        StretchRect_t m_orig_stretch_rect = nullptr;
+
+        D3DXCreateTextureFromFileInMemoryEx_t m_orig_d3dx_from_memory_ex = nullptr;
+        D3DXCreateTextureFromFileInMemory_t m_orig_d3dx_from_memory = nullptr;
+        D3DXCreateTextureFromFileExA_t m_orig_d3dx_from_file_ex_a = nullptr;
+        D3DXCreateTextureFromFileExW_t m_orig_d3dx_from_file_ex_w = nullptr;
+        D3DXCreateTextureFromFileA_t m_orig_d3dx_from_file_a = nullptr;
+        D3DXCreateTextureFromFileW_t m_orig_d3dx_from_file_w = nullptr;
+        bool m_d3dx_hooked = false;
     };
 }

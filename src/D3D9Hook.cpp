@@ -1,4 +1,10 @@
 #include "D3D9Hook.h"
+#include "ScopedFlag.h"
+#include <psapi.h>
+#include <algorithm>
+#include <cctype>
+#include <unordered_set>
+#include <string>
 #include "HookManager.h"
 #include "IATHook.h"
 #include "TextureManager.h"
@@ -48,6 +54,96 @@ namespace TextureToolkit
 
     static thread_local std::unordered_map<IDirect3DTexture9 *, LockedTextureData> s_locked_textures;
     thread_local bool D3D9Hook::s_inside_injection = false;
+
+
+    static std::string hex_string(DWORD v)
+    {
+        char buf[16] = {};
+        snprintf(buf, sizeof(buf), "%08lX", static_cast<unsigned long>(v));
+        return buf;
+    }
+
+    // Written once, when the device is intercepted. A game whose art never reaches a lock is
+    // almost always going through something: a d3d8-to-d3d9 wrapper, a D3DX redistributable, or
+    // another overlay that got to the vtable first. Naming the graphics modules actually loaded
+    // turns "no textures appear" from guesswork into a fact you can read off the log.
+    static void log_graphics_modules()
+    {
+        HMODULE modules[512] = {};
+        DWORD needed = 0;
+        if (!EnumProcessModules(GetCurrentProcess(), modules, sizeof(modules), &needed))
+        {
+            Logger::get().info("[D3D9Hook] Could not enumerate loaded modules.");
+            return;
+        }
+
+        const size_t count = (std::min)(static_cast<size_t>(needed / sizeof(HMODULE)),
+                                        sizeof(modules) / sizeof(modules[0]));
+
+        std::string found;
+        for (size_t i = 0; i < count; ++i)
+        {
+            char path[MAX_PATH] = {};
+            if (GetModuleFileNameA(modules[i], path, MAX_PATH) == 0)
+                continue;
+
+            const char *slash = strrchr(path, '\\');
+            std::string name = (slash != nullptr) ? (slash + 1) : path;
+
+            std::string lower;
+            lower.reserve(name.size());
+            for (char c : name)
+                lower.push_back(static_cast<char>(tolower(static_cast<unsigned char>(c))));
+
+            if (lower.rfind("d3d", 0) == 0 || lower.rfind("dxgi", 0) == 0 ||
+                lower.rfind("ddraw", 0) == 0 || lower.rfind("dinput", 0) == 0 ||
+                lower.find("reshade") != std::string::npos ||
+                lower.find("dxvk") != std::string::npos)
+            {
+                if (!found.empty())
+                    found += ", ";
+                found += name;
+            }
+        }
+
+        Logger::get().info("[D3D9Hook] Graphics modules loaded: " + (found.empty() ? std::string("(none matched)") : found));
+    }
+
+    // Diagnostic budget for the per-texture debug lines.
+    //
+    // These used to be a plain counter per call site, capped at 20 calls. One texture re-locked
+    // every frame could spend the whole budget: in a Street Racing Syndicate log, a 640x480 video
+    // surface locked 19 times in under a second used every LockRect line available, so nothing
+    // that happened during the following 30 seconds appeared at all. The budget is spent per
+    // DISTINCT texture now, so a texture that repeats costs exactly one line and cannot hide the
+    // others. Verbose is checked first, which keeps all of this off the hot path by default.
+    static constexpr size_t kMaxLoggedPerSite = 32;
+
+    static bool should_log_texture(const char *site, const void *texture)
+    {
+        if (!Logger::get().debug_enabled())
+            return false;
+
+        static std::mutex mtx;
+        static std::unordered_map<std::string, std::unordered_set<const void *>> seen;
+
+        std::lock_guard<std::mutex> lock(mtx);
+        auto &set = seen[site];
+        if (set.size() >= kMaxLoggedPerSite)
+            return false;
+        return set.insert(texture).second;
+    }
+
+    static void log_texture_event(const char *tag, const char *site, const void *texture, UINT width, UINT height)
+    {
+        if (!should_log_texture(site, texture))
+            return;
+
+        Logger::get().debug(std::string("[") + tag + "] " + site + ": texture=0x" +
+                            std::to_string(reinterpret_cast<uintptr_t>(texture)) + " " +
+                            std::to_string(width) + "x" + std::to_string(height));
+    }
+
     std::atomic<uint64_t> D3D9Hook::s_present_count{0};
 
     D3D9Hook &D3D9Hook::get()
@@ -149,13 +245,17 @@ namespace TextureToolkit
         void *present_addr = vtable[17];
         void *reset_addr = vtable[16];
         void *create_tex_addr = vtable[23];
-        void *update_tex_addr = vtable[31]; // IDirect3DDevice9::UpdateTexture
+        void *update_tex_addr = vtable[31];     // IDirect3DDevice9::UpdateTexture
+        void *update_surface_addr = vtable[30]; // IDirect3DDevice9::UpdateSurface
+        void *stretch_rect_addr = vtable[34];   // IDirect3DDevice9::StretchRect
         void *set_tex_addr = vtable[65];
 
         HookManager::get().create_hook(present_addr, &Hooked_Present, reinterpret_cast<void **>(&m_orig_present));
         HookManager::get().create_hook(reset_addr, &Hooked_Reset, reinterpret_cast<void **>(&m_orig_reset));
         HookManager::get().create_hook(create_tex_addr, &Hooked_CreateTexture, reinterpret_cast<void **>(&m_orig_create_texture));
         HookManager::get().create_hook(update_tex_addr, &Hooked_UpdateTexture, reinterpret_cast<void **>(&m_orig_update_texture));
+        HookManager::get().create_hook(update_surface_addr, &Hooked_UpdateSurface, reinterpret_cast<void **>(&m_orig_update_surface));
+        HookManager::get().create_hook(stretch_rect_addr, &Hooked_StretchRect, reinterpret_cast<void **>(&m_orig_stretch_rect));
         HookManager::get().create_hook(set_tex_addr, &Hooked_SetTexture, reinterpret_cast<void **>(&m_orig_set_texture));
 
         // D3D9Ex devices (e.g. GTA IV) present through PresentEx, which is a separate vtable
@@ -183,6 +283,12 @@ namespace TextureToolkit
         }
 
         Logger::get().info("[D3D9Hook] REAL GAME DEVICE INTERCEPTED! VTable hooks active on game IDirect3DDevice9.");
+
+        log_graphics_modules();
+
+        // A game that links D3DX statically has it loaded by now. One that loads it on demand is
+        // picked up by the retry in Hooked_CreateTexture.
+        hook_d3dx();
     }
 
     void D3D9Hook::shutdown()
@@ -400,11 +506,37 @@ namespace TextureToolkit
 
     HRESULT STDMETHODCALLTYPE D3D9Hook::Hooked_CreateTexture(IDirect3DDevice9 *device, UINT Width, UINT Height, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, IDirect3DTexture9 **ppTexture, HANDLE *pSharedHandle)
     {
+        // A game can load d3dx9 on demand, after the device exists. Retry a bounded number of
+        // times from here, which runs when art is being created rather than on every draw.
+        if (!get().m_d3dx_hooked)
+        {
+            static std::atomic<int> s_d3dx_attempts{0};
+            if (s_d3dx_attempts.fetch_add(1, std::memory_order_relaxed) < 64)
+                get().hook_d3dx();
+        }
+
         // Skip hooking new vtables when we're inside injection (creating replacement textures)
         if (s_inside_injection)
             return get().m_orig_create_texture(device, Width, Height, Levels, Usage, Format, Pool, ppTexture, pSharedHandle);
 
-        Logger::get().debug("[D3D9Hook] Hooked_CreateTexture called: Width=" + std::to_string(Width) + ", Height=" + std::to_string(Height) + ", Format=" + std::to_string(static_cast<uint32_t>(Format)));
+        if (Logger::get().debug_enabled())
+        {
+            const char *pool_name = "?";
+            switch (Pool)
+            {
+            case D3DPOOL_DEFAULT:   pool_name = "DEFAULT";   break;
+            case D3DPOOL_MANAGED:   pool_name = "MANAGED";   break;
+            case D3DPOOL_SYSTEMMEM: pool_name = "SYSTEMMEM"; break;
+            case D3DPOOL_SCRATCH:   pool_name = "SCRATCH";   break;
+            default: break;
+            }
+
+            Logger::get().debug("[D3D9Hook] CreateTexture: " + std::to_string(Width) + "x" + std::to_string(Height) +
+                                " fmt=" + std::to_string(static_cast<uint32_t>(Format)) +
+                                " levels=" + std::to_string(Levels) +
+                                " usage=0x" + hex_string(Usage) +
+                                " pool=" + pool_name);
+        }
         HRESULT hr = get().m_orig_create_texture(device, Width, Height, Levels, Usage, Format, Pool, ppTexture, pSharedHandle);
 
         if (SUCCEEDED(hr) && ppTexture != nullptr && *ppTexture != nullptr)
@@ -456,13 +588,8 @@ namespace TextureToolkit
             D3DSURFACE_DESC desc = {};
             if (SUCCEEDED(texture->GetLevelDesc(0, &desc)))
             {
-                static int s_logged_locks = 0;
-                if (s_logged_locks < 20)
-                {
-                    s_logged_locks++;
-                    std::string has_rect = (pRect != nullptr) ? "Yes" : "No";
-                    Logger::get().debug("[D3D9Hook] Hooked_LockRect: Texture=0x" + std::to_string(reinterpret_cast<uintptr_t>(texture)) + " Width=" + std::to_string(desc.Width) + " Height=" + std::to_string(desc.Height) + " pRect=" + has_rect);
-                }
+                log_texture_event("D3D9Hook", (pRect != nullptr) ? "LockRect (sub-rect)" : "LockRect",
+                                  texture, desc.Width, desc.Height);
 
                 // Ignore partial sub-rect locks (cannot safely hash/dump whole texture)
                 if (pRect != nullptr)
@@ -507,12 +634,7 @@ namespace TextureToolkit
             if (it != s_locked_textures.end())
             {
                 LockedTextureData &data = it->second;
-                static int s_logged_unlocks = 0;
-                if (s_logged_unlocks < 20)
-                {
-                    s_logged_unlocks++;
-                    Logger::get().debug("[D3D9Hook] Hooked_UnlockRect: Registering texture=0x" + std::to_string(reinterpret_cast<uintptr_t>(texture)));
-                }
+                log_texture_event("D3D9Hook", "UnlockRect registering", texture, data.width, data.height);
 
                 // Pitch is signed here and unsigned from there on, so a negative one would become
                 // an enormous row length instead of a refused lock.
@@ -538,11 +660,9 @@ namespace TextureToolkit
 
     HRESULT STDMETHODCALLTYPE D3D9Hook::Hooked_SetTexture(IDirect3DDevice9 *device, DWORD Stage, IDirect3DBaseTexture9 *pTexture)
     {
-        static int s_logged_set_texture_calls = 0;
-        if (s_logged_set_texture_calls < 20 && pTexture != nullptr)
+        if (pTexture != nullptr && should_log_texture("SetTexture", pTexture))
         {
-            s_logged_set_texture_calls++;
-            Logger::get().debug("[D3D9Hook] Hooked_SetTexture: Stage=" + std::to_string(Stage) + " pTexture=0x" + std::to_string(reinterpret_cast<uintptr_t>(pTexture)));
+            Logger::get().debug("[D3D9Hook] SetTexture: Stage=" + std::to_string(Stage) + " pTexture=0x" + std::to_string(reinterpret_cast<uintptr_t>(pTexture)));
         }
 
         IDirect3DBaseTexture9 *pReplacement = TextureManager::get().get_replacement_texture9(pTexture);
@@ -557,7 +677,205 @@ namespace TextureToolkit
         // and copy it into the DEFAULT texture that is actually bound. Carry the hash tag
         // from source to destination so the bound texture is tracked, previewed and injected.
         if (SUCCEEDED(hr) && !s_inside_injection)
+        {
+            log_texture_event("D3D9Hook", "UpdateTexture", pDestinationTexture, 0, 0);
             TextureManager::get().copy_tag9(pSourceTexture, pDestinationTexture);
+        }
+
+        return hr;
+    }
+
+
+
+    // Reads back the top level of a texture that something else has already filled, and registers
+    // it exactly as an unlock would. D3DX creates and populates a texture without the game ever
+    // touching LockRect, so this is the only moment its pixels are visible to us.
+    void D3D9Hook::register_loaded_texture(IDirect3DTexture9 *texture, const char *origin)
+    {
+        if (texture == nullptr || get().m_device == nullptr)
+            return;
+
+        D3DSURFACE_DESC desc = {};
+        if (FAILED(texture->GetLevelDesc(0, &desc)))
+            return;
+
+        // A DEFAULT-pool texture cannot be locked for reading. D3DX creates MANAGED unless the
+        // caller asked otherwise, so this covers the ordinary case and quietly skips the rest.
+        if (desc.Pool == D3DPOOL_DEFAULT)
+            return;
+
+        // Our own LockRect/UnlockRect hooks must not treat this read-back as a game upload.
+        ScopedFlag guard(s_inside_injection);
+
+        D3DLOCKED_RECT rect = {};
+        if (FAILED(texture->LockRect(0, &rect, nullptr, D3DLOCK_READONLY)))
+            return;
+
+        if (rect.pBits != nullptr && rect.Pitch > 0)
+        {
+            log_texture_event("D3D9Hook", origin, texture, desc.Width, desc.Height);
+            TextureManager::get().register_unmap_texture9(
+                get().m_device, texture, rect.pBits, desc.Width, desc.Height, desc.Format,
+                static_cast<UINT>(rect.Pitch));
+        }
+
+        texture->UnlockRect(0);
+    }
+
+    HRESULT WINAPI D3D9Hook::Hooked_D3DXCreateTextureFromFileInMemoryEx(IDirect3DDevice9 *device, const void *src, UINT size, UINT w, UINT h, UINT mips, DWORD usage, D3DFORMAT fmt, D3DPOOL pool, DWORD filter, DWORD mipfilter, D3DCOLOR key, void *info, void *palette, IDirect3DTexture9 **ppTexture)
+    {
+        HRESULT hr = get().m_orig_d3dx_from_memory_ex(device, src, size, w, h, mips, usage, fmt, pool, filter, mipfilter, key, info, palette, ppTexture);
+        if (SUCCEEDED(hr) && ppTexture != nullptr && !s_inside_injection)
+            register_loaded_texture(*ppTexture, "D3DX FromFileInMemoryEx");
+        return hr;
+    }
+
+    HRESULT WINAPI D3D9Hook::Hooked_D3DXCreateTextureFromFileInMemory(IDirect3DDevice9 *device, const void *src, UINT size, IDirect3DTexture9 **ppTexture)
+    {
+        HRESULT hr = get().m_orig_d3dx_from_memory(device, src, size, ppTexture);
+        if (SUCCEEDED(hr) && ppTexture != nullptr && !s_inside_injection)
+            register_loaded_texture(*ppTexture, "D3DX FromFileInMemory");
+        return hr;
+    }
+
+    HRESULT WINAPI D3D9Hook::Hooked_D3DXCreateTextureFromFileExA(IDirect3DDevice9 *device, const char *file, UINT w, UINT h, UINT mips, DWORD usage, D3DFORMAT fmt, D3DPOOL pool, DWORD filter, DWORD mipfilter, D3DCOLOR key, void *info, void *palette, IDirect3DTexture9 **ppTexture)
+    {
+        HRESULT hr = get().m_orig_d3dx_from_file_ex_a(device, file, w, h, mips, usage, fmt, pool, filter, mipfilter, key, info, palette, ppTexture);
+        if (SUCCEEDED(hr) && ppTexture != nullptr && !s_inside_injection)
+            register_loaded_texture(*ppTexture, "D3DX FromFileExA");
+        return hr;
+    }
+
+    HRESULT WINAPI D3D9Hook::Hooked_D3DXCreateTextureFromFileExW(IDirect3DDevice9 *device, const wchar_t *file, UINT w, UINT h, UINT mips, DWORD usage, D3DFORMAT fmt, D3DPOOL pool, DWORD filter, DWORD mipfilter, D3DCOLOR key, void *info, void *palette, IDirect3DTexture9 **ppTexture)
+    {
+        HRESULT hr = get().m_orig_d3dx_from_file_ex_w(device, file, w, h, mips, usage, fmt, pool, filter, mipfilter, key, info, palette, ppTexture);
+        if (SUCCEEDED(hr) && ppTexture != nullptr && !s_inside_injection)
+            register_loaded_texture(*ppTexture, "D3DX FromFileExW");
+        return hr;
+    }
+
+    HRESULT WINAPI D3D9Hook::Hooked_D3DXCreateTextureFromFileA(IDirect3DDevice9 *device, const char *file, IDirect3DTexture9 **ppTexture)
+    {
+        HRESULT hr = get().m_orig_d3dx_from_file_a(device, file, ppTexture);
+        if (SUCCEEDED(hr) && ppTexture != nullptr && !s_inside_injection)
+            register_loaded_texture(*ppTexture, "D3DX FromFileA");
+        return hr;
+    }
+
+    HRESULT WINAPI D3D9Hook::Hooked_D3DXCreateTextureFromFileW(IDirect3DDevice9 *device, const wchar_t *file, IDirect3DTexture9 **ppTexture)
+    {
+        HRESULT hr = get().m_orig_d3dx_from_file_w(device, file, ppTexture);
+        if (SUCCEEDED(hr) && ppTexture != nullptr && !s_inside_injection)
+            register_loaded_texture(*ppTexture, "D3DX FromFileW");
+        return hr;
+    }
+
+    void D3D9Hook::hook_d3dx()
+    {
+        if (m_d3dx_hooked)
+            return;
+
+        // Only a module the game has ALREADY loaded is touched. GetModuleHandleA does not load
+        // anything, so a game that ships no D3DX is left exactly as it was.
+        HMODULE d3dx = nullptr;
+        char module_name[32] = {};
+        for (int v = 43; v >= 24 && d3dx == nullptr; --v)
+        {
+            snprintf(module_name, sizeof(module_name), "d3dx9_%d.dll", v);
+            d3dx = GetModuleHandleA(module_name);
+        }
+        if (d3dx == nullptr)
+        {
+            d3dx = GetModuleHandleA("d3dx9.dll");
+            if (d3dx != nullptr)
+                snprintf(module_name, sizeof(module_name), "d3dx9.dll");
+        }
+
+        if (d3dx == nullptr)
+        {
+            // Said once, not on every retry: most games reach here and it is not a problem.
+            static std::atomic<bool> s_said{false};
+            bool expected = false;
+            if (s_said.compare_exchange_strong(expected, true))
+                Logger::get().info("[D3D9Hook] No d3dx9 module is loaded in this process; D3DX texture loading is not watched.");
+            return;
+        }
+
+        m_d3dx_hooked = true;
+
+        struct Entry { const char *name; void *hook; void **orig; };
+        const Entry entries[] = {
+            { "D3DXCreateTextureFromFileInMemoryEx", &Hooked_D3DXCreateTextureFromFileInMemoryEx, reinterpret_cast<void **>(&m_orig_d3dx_from_memory_ex) },
+            { "D3DXCreateTextureFromFileInMemory",   &Hooked_D3DXCreateTextureFromFileInMemory,   reinterpret_cast<void **>(&m_orig_d3dx_from_memory) },
+            { "D3DXCreateTextureFromFileExA",        &Hooked_D3DXCreateTextureFromFileExA,        reinterpret_cast<void **>(&m_orig_d3dx_from_file_ex_a) },
+            { "D3DXCreateTextureFromFileExW",        &Hooked_D3DXCreateTextureFromFileExW,        reinterpret_cast<void **>(&m_orig_d3dx_from_file_ex_w) },
+            { "D3DXCreateTextureFromFileA",          &Hooked_D3DXCreateTextureFromFileA,          reinterpret_cast<void **>(&m_orig_d3dx_from_file_a) },
+            { "D3DXCreateTextureFromFileW",          &Hooked_D3DXCreateTextureFromFileW,          reinterpret_cast<void **>(&m_orig_d3dx_from_file_w) },
+        };
+
+        int hooked = 0;
+        for (const Entry &e : entries)
+        {
+            void *addr = reinterpret_cast<void *>(GetProcAddress(d3dx, e.name));
+            if (addr != nullptr && HookManager::get().create_hook(addr, e.hook, e.orig))
+                ++hooked;
+        }
+
+        Logger::get().info(std::string("[D3D9Hook] Watching ") + std::to_string(hooked) +
+                           " D3DX texture loader(s) in " + module_name + ".");
+    }
+
+    // Carries the content tag from a staged surface to the surface actually rendered. Both of
+    // these copy pixels without any lock, which is how art can reach the GPU completely unseen.
+    static void carry_tag_between_surfaces(IDirect3DSurface9 *src, IDirect3DSurface9 *dst)
+    {
+        if (src == nullptr || dst == nullptr)
+            return;
+
+        IDirect3DTexture9 *src_tex = nullptr;
+        if (FAILED(src->GetContainer(__uuidof(IDirect3DTexture9), reinterpret_cast<void **>(&src_tex))) || src_tex == nullptr)
+            return;
+
+        IDirect3DTexture9 *dst_tex = nullptr;
+        if (SUCCEEDED(dst->GetContainer(__uuidof(IDirect3DTexture9), reinterpret_cast<void **>(&dst_tex))) && dst_tex != nullptr)
+        {
+            TextureManager::get().copy_tag9(src_tex, dst_tex);
+            dst_tex->Release();
+        }
+        src_tex->Release();
+    }
+
+    HRESULT STDMETHODCALLTYPE D3D9Hook::Hooked_UpdateSurface(IDirect3DDevice9 *device, IDirect3DSurface9 *pSourceSurface, const RECT *pSourceRect, IDirect3DSurface9 *pDestinationSurface, const POINT *pDestPoint)
+    {
+        HRESULT hr = get().m_orig_update_surface(device, pSourceSurface, pSourceRect, pDestinationSurface, pDestPoint);
+
+        // The same idea as UpdateTexture, one surface at a time: art staged in SYSTEMMEM is copied
+        // into the DEFAULT texture the game actually binds. Only a whole-surface copy keeps the
+        // identity; a partial one produces different pixels and so a different texture.
+        if (SUCCEEDED(hr) && !s_inside_injection)
+        {
+            log_texture_event("D3D9Hook", (pSourceRect == nullptr) ? "UpdateSurface" : "UpdateSurface (sub-rect)",
+                              pDestinationSurface, 0, 0);
+            if (pSourceRect == nullptr)
+                carry_tag_between_surfaces(pSourceSurface, pDestinationSurface);
+        }
+
+        return hr;
+    }
+
+    HRESULT STDMETHODCALLTYPE D3D9Hook::Hooked_StretchRect(IDirect3DDevice9 *device, IDirect3DSurface9 *pSourceSurface, const RECT *pSourceRect, IDirect3DSurface9 *pDestSurface, const RECT *pDestRect, D3DTEXTUREFILTERTYPE Filter)
+    {
+        HRESULT hr = get().m_orig_stretch_rect(device, pSourceSurface, pSourceRect, pDestSurface, pDestRect, Filter);
+
+        // Only a straight, whole-surface blit carries the identity across. A scaled or partial one
+        // resamples the pixels, so the destination is genuinely a different texture.
+        if (SUCCEEDED(hr) && !s_inside_injection)
+        {
+            const bool whole = (pSourceRect == nullptr && pDestRect == nullptr);
+            log_texture_event("D3D9Hook", whole ? "StretchRect" : "StretchRect (partial)", pDestSurface, 0, 0);
+            if (whole)
+                carry_tag_between_surfaces(pSourceSurface, pDestSurface);
+        }
 
         return hr;
     }
@@ -573,11 +891,28 @@ namespace TextureToolkit
         if (SUCCEEDED(hr) && pLockedRect != nullptr && pLockedRect->pBits != nullptr)
         {
             IDirect3DTexture9 *texture = nullptr;
-            if (SUCCEEDED(surface->GetContainer(__uuidof(IDirect3DTexture9), reinterpret_cast<void **>(&texture))) && texture != nullptr)
+            if (FAILED(surface->GetContainer(__uuidof(IDirect3DTexture9), reinterpret_cast<void **>(&texture))) || texture == nullptr)
+            {
+                // A surface with no parent texture: an offscreen-plain or render-target surface,
+                // which a game can fill and then copy into a texture with UpdateSurface or
+                // StretchRect. We cannot hash it here (there is no texture to tag), but staying
+                // silent about it made this path invisible while diagnosing a game whose art never
+                // reached a texture lock at all.
+                D3DSURFACE_DESC sdesc = {};
+                if (SUCCEEDED(surface->GetDesc(&sdesc)))
+                    log_texture_event("D3D9Hook", "SurfaceLockRect on a surface with no parent texture",
+                                      surface, sdesc.Width, sdesc.Height);
+                return hr;
+            }
+
             {
                 D3DSURFACE_DESC desc = {};
                 if (SUCCEEDED(surface->GetDesc(&desc)))
                 {
+                    // Logged before the level-0 test below, which used to return first and so hid
+                    // every mip upload from the log entirely.
+                    log_texture_event("D3D9Hook", "SurfaceLockRect", texture, desc.Width, desc.Height);
+
                     // Only the top level identifies the texture. A game uploads its mip chain one
                     // surface at a time (GetSurfaceLevel(n) -> LockRect), and every one of those
                     // arrives here with the SAME parent texture, so without this check each mip is
@@ -592,14 +927,6 @@ namespace TextureToolkit
                     {
                         texture->Release();
                         return hr;
-                    }
-
-                    static int s_logged_surf_locks = 0;
-                    if (s_logged_surf_locks < 20)
-                    {
-                        s_logged_surf_locks++;
-                        std::string has_rect = (pRect != nullptr) ? "Yes" : "No";
-                        Logger::get().debug("[D3D9Hook] Hooked_SurfaceLockRect: Surface=0x" + std::to_string(reinterpret_cast<uintptr_t>(surface)) + " ParentTexture=0x" + std::to_string(reinterpret_cast<uintptr_t>(texture)) + " Width=" + std::to_string(desc.Width) + " Height=" + std::to_string(desc.Height) + " pRect=" + has_rect);
                     }
 
                     // Check if pRect covers the full surface
@@ -647,12 +974,7 @@ namespace TextureToolkit
             if (it != s_locked_textures.end())
             {
                 LockedTextureData &data = it->second;
-                static int s_logged_surf_unlocks = 0;
-                if (s_logged_surf_unlocks < 20)
-                {
-                    s_logged_surf_unlocks++;
-                    Logger::get().debug("[D3D9Hook] Hooked_SurfaceUnlockRect: Registering parent texture=0x" + std::to_string(reinterpret_cast<uintptr_t>(texture)));
-                }
+                log_texture_event("D3D9Hook", "SurfaceUnlockRect registering", texture, data.width, data.height);
 
                 // Pitch is signed here and unsigned from there on, so a negative one would become
                 // an enormous row length instead of a refused lock.

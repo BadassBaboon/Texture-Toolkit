@@ -178,6 +178,11 @@ namespace TextureToolkit
         std::unordered_set<uint64_t> m_active_frame_hashes;
         std::unordered_map<uint64_t, std::filesystem::path> m_injected_files;
         std::unordered_map<uint32_t, std::filesystem::path> m_sk_injected_files; // Special K naming
+
+        // True while any SK-named file is loaded. Read on the upload path without the lock: with
+        // no such file present the Special K hash cannot match anything, and computing it means a
+        // second full pass over every texture the game uploads.
+        std::atomic<bool> m_have_sk_files{false};
         std::unordered_map<uint64_t, TextureDetails> m_tracked_textures;
 
         // Replacement maps are keyed by content hash, not by raw resource pointer.

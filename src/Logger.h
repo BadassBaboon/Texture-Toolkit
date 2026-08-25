@@ -29,6 +29,9 @@ namespace TextureToolkit
         // thousands of lines/sec). Set to Debug via the INI "Verbose" toggle.
         void set_min_level(LogLevel level) { m_min_level = level; }
 
+        // Lets a caller skip building an expensive message that would be dropped anyway.
+        bool debug_enabled() const { return m_min_level <= LogLevel::Debug; }
+
         void debug(const std::string &msg) { log(LogLevel::Debug, msg); }
         void info(const std::string &msg) { log(LogLevel::Info, msg); }
         void warn(const std::string &msg) { log(LogLevel::Warning, msg); }

@@ -12,6 +12,10 @@
 
 namespace TextureToolkit
 {
+    // Set by anything that changes the list and should show up at once (Reload, a dump, a
+    // selection-driven injection) instead of waiting for the next snapshot.
+    static bool s_force_refresh = true;
+
     bool TextureToolkitUI::s_show_ui = false; // Default hidden; INSERT key toggles it
     static std::string s_status_message = "Ready";
     static uint64_t s_selected_texture_hash = 0;
@@ -150,6 +154,7 @@ namespace TextureToolkit
         ImGui::SameLine();
         if (ImGui::SmallButton("Dump"))
         {
+            s_force_refresh = true;
             if (tm.request_dump(tex.hash))
                 SetStatusMessage("Dumped " + hash + " to TT/dump.");
             else
@@ -319,6 +324,7 @@ namespace TextureToolkit
         if (ImGui::Button("Reload injected textures"))
         {
             tm.rescan_injected();
+            s_force_refresh = true;
             SetStatusMessage("Rescanned TT/inject for DDS replacements.");
         }
         ImGui::SetItemTooltip("Rescan TT/inject and reload the replacement DDS files.");
@@ -326,6 +332,7 @@ namespace TextureToolkit
         if (ImGui::Button("Dump all"))
         {
             size_t n = tm.dump_all(tm.show_current_frame_only);
+            s_force_refresh = true;
             SetStatusMessage("Dump-all queued " + std::to_string(n) + (tm.show_current_frame_only ? " active" : " tracked") + " texture(s); written as they draw.");
         }
         ImGui::SetItemTooltip("Dump every tracked texture, or just the current scene when Scene only is ticked.\nEach is written the next time it is drawn.");
@@ -339,7 +346,23 @@ namespace TextureToolkit
         ImGui::SetItemTooltip("Open TT/inject in Explorer.");
 
         // Counts and total memory.
-        std::vector<TextureDetails> textures = tm.get_active_textures();
+        //
+        // Snapshotted at a fixed rate rather than every frame. get_active_textures walks the whole
+        // tracked map under the manager lock and copies every row, and a TextureDetails carries ten
+        // std::strings. With the 2615 textures a Saints Row 2 session reaches, that is tens of
+        // thousands of allocations per frame while holding the lock every texture upload also
+        // needs -- the game stopped dead the moment the panel was opened during a load. A texture
+        // list does not need to be rebuilt sixty times a second.
+        static std::vector<TextureDetails> s_snapshot;
+        static double s_snapshot_time = -1.0;
+        const double now = ImGui::GetTime();
+        if (s_snapshot_time < 0.0 || (now - s_snapshot_time) >= 0.25 || s_force_refresh)
+        {
+            s_snapshot = tm.get_active_textures();
+            s_snapshot_time = now;
+            s_force_refresh = false;
+        }
+        std::vector<TextureDetails> &textures = s_snapshot;
         size_t injected = 0, dumped = 0, original = 0, pending = 0;
         uint64_t total_bytes = 0;
         for (const auto &t : textures)

@@ -89,6 +89,7 @@ namespace TextureToolkit
 
             const char *slash = strrchr(path, '\\');
             std::string name = (slash != nullptr) ? (slash + 1) : path;
+            const std::string full_path = path;
 
             std::string lower;
             lower.reserve(name.size());
@@ -102,11 +103,46 @@ namespace TextureToolkit
             {
                 if (!found.empty())
                     found += ", ";
-                found += name;
+                // Full path, because the same file name loaded twice is the signature of a
+                // wrapper sitting in the game folder in front of the system DLL, and the bare
+                // name cannot tell the two apart.
+                found += full_path;
             }
         }
 
         Logger::get().info("[D3D9Hook] Graphics modules loaded: " + (found.empty() ? std::string("(none matched)") : found));
+    }
+
+
+    // A vtable is identified by the pair of function addresses we actually patch, so two vtables
+    // that share the same LockRect implementation are hooked once.
+    static uint64_t lock_key(void *a, void *b)
+    {
+        return (static_cast<uint64_t>(reinterpret_cast<uintptr_t>(a)) << 1) ^
+                static_cast<uint64_t>(reinterpret_cast<uintptr_t>(b));
+    }
+
+    // Returns true the first time a key is seen. Bounded so a pathological game cannot grow this
+    // without limit; a handful of distinct vtables is already unusual.
+    static bool remember_in(std::unordered_set<uint64_t> &seen, uint64_t key)
+    {
+        static std::mutex mtx;
+        std::lock_guard<std::mutex> lock(mtx);
+        if (seen.size() >= 16)
+            return false;
+        return seen.insert(key).second;
+    }
+
+    static bool remember_texture_vtable(uint64_t key)
+    {
+        static std::unordered_set<uint64_t> seen;
+        return remember_in(seen, key);
+    }
+
+    static bool remember_surface_vtable(uint64_t key)
+    {
+        static std::unordered_set<uint64_t> seen;
+        return remember_in(seen, key);
     }
 
     // Diagnostic budget for the per-texture debug lines.
@@ -544,28 +580,66 @@ namespace TextureToolkit
             IDirect3DTexture9 *tex = *ppTexture;
             void **vtable = *reinterpret_cast<void ***>(tex);
 
-            void *lock_addr = vtable[19];
-            void *unlock_addr = vtable[20];
-
-            if (get().m_orig_lock_rect == nullptr)
+            // Hook every DISTINCT vtable, not only the first texture's.
+            //
+            // We used to hook the first created texture and assume every other texture shared its
+            // vtable. That holds in most games and is why this went unnoticed. It is not guaranteed:
+            // a wrapper, a debug runtime or a differing implementation per pool can hand out a
+            // second vtable, and textures created through it were then never seen locked at all --
+            // created, bound, drawn, and completely absent from the panel. Street Racing Syndicate
+            // creates 1446 MANAGED textures with no usage flags, which can only be filled by being
+            // locked, and we observed four locks.
+            //
+            // Tracking the addresses we have already hooked makes this self-correcting: a new
+            // vtable is hooked the moment a texture using it appears, and the log names it.
+            if (remember_texture_vtable(lock_key(vtable[19], vtable[20])))
             {
-                HookManager::get().create_hook(lock_addr, &Hooked_LockRect, reinterpret_cast<void **>(&get().m_orig_lock_rect));
-                HookManager::get().create_hook(unlock_addr, &Hooked_UnlockRect, reinterpret_cast<void **>(&get().m_orig_unlock_rect));
-                Logger::get().info("[D3D9Hook] Hooked LockRect and UnlockRect on the first created texture.");
+                LockRect_t prev_lock = get().m_orig_lock_rect;
+                UnlockRect_t prev_unlock = get().m_orig_unlock_rect;
+
+                const bool ok_lock = HookManager::get().create_hook(vtable[19], &Hooked_LockRect, reinterpret_cast<void **>(&get().m_orig_lock_rect));
+                const bool ok_unlock = HookManager::get().create_hook(vtable[20], &Hooked_UnlockRect, reinterpret_cast<void **>(&get().m_orig_unlock_rect));
+
+                // Only the first vtable owns the trampoline we call through. A later one is still
+                // hooked (so its locks reach us), but the original it would forward to is not the
+                // one we keep, and calling the wrong trampoline would corrupt the call. Keep the
+                // first and say so rather than silently overwriting it.
+                if (prev_lock != nullptr)
+                {
+                    get().m_orig_lock_rect = prev_lock;
+                    get().m_orig_unlock_rect = prev_unlock;
+                }
+
+                Logger::get().info(std::string("[D3D9Hook] Hooked texture LockRect/UnlockRect on vtable 0x") +
+                                   hex_string(static_cast<DWORD>(reinterpret_cast<uintptr_t>(vtable))) +
+                                   " (pool=" + ((Pool == D3DPOOL_MANAGED) ? "MANAGED" : (Pool == D3DPOOL_DEFAULT) ? "DEFAULT" : "other") +
+                                   ", lock=" + (ok_lock ? "ok" : "FAILED") +
+                                   ", unlock=" + (ok_unlock ? "ok" : "FAILED") + ")");
             }
 
             IDirect3DSurface9 *pSurface = nullptr;
             if (SUCCEEDED(tex->GetSurfaceLevel(0, &pSurface)) && pSurface != nullptr)
             {
                 void **surface_vtable = *reinterpret_cast<void ***>(pSurface);
-                void *surf_lock_addr = surface_vtable[13];
-                void *surf_unlock_addr = surface_vtable[14];
 
-                if (get().m_orig_surface_lock_rect == nullptr)
+                if (remember_surface_vtable(lock_key(surface_vtable[13], surface_vtable[14])))
                 {
-                    HookManager::get().create_hook(surf_lock_addr, &Hooked_SurfaceLockRect, reinterpret_cast<void **>(&get().m_orig_surface_lock_rect));
-                    HookManager::get().create_hook(surf_unlock_addr, &Hooked_SurfaceUnlockRect, reinterpret_cast<void **>(&get().m_orig_surface_unlock_rect));
-                    Logger::get().info("[D3D9Hook] Hooked Surface LockRect and UnlockRect on the first surface.");
+                    SurfaceLockRect_t prev_lock = get().m_orig_surface_lock_rect;
+                    SurfaceUnlockRect_t prev_unlock = get().m_orig_surface_unlock_rect;
+
+                    const bool ok_lock = HookManager::get().create_hook(surface_vtable[13], &Hooked_SurfaceLockRect, reinterpret_cast<void **>(&get().m_orig_surface_lock_rect));
+                    const bool ok_unlock = HookManager::get().create_hook(surface_vtable[14], &Hooked_SurfaceUnlockRect, reinterpret_cast<void **>(&get().m_orig_surface_unlock_rect));
+
+                    if (prev_lock != nullptr)
+                    {
+                        get().m_orig_surface_lock_rect = prev_lock;
+                        get().m_orig_surface_unlock_rect = prev_unlock;
+                    }
+
+                    Logger::get().info(std::string("[D3D9Hook] Hooked surface LockRect/UnlockRect on vtable 0x") +
+                                       hex_string(static_cast<DWORD>(reinterpret_cast<uintptr_t>(surface_vtable))) +
+                                       " (lock=" + (ok_lock ? "ok" : "FAILED") +
+                                       ", unlock=" + (ok_unlock ? "ok" : "FAILED") + ")");
                 }
 
                 pSurface->Release();

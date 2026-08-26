@@ -13,6 +13,9 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
 ## [Unreleased]
 
 ### Added
+- **Textures bound to vertex and compute shaders are seen.** Only the pixel stage was hooked, so
+  anything sampled by a vertex shader (terrain displaced from a heightmap, for one) or read by a
+  compute pass never appeared in the panel and could not be replaced at all.
 - **Direct3D 9 textures loaded through D3DX are now tracked.** Games of that era hand a file to
   `D3DXCreateTextureFromFile*` and never lock the texture themselves, so their art was created but
   never seen: Street Racing Syndicate creates 1487 textures, 484 of them DXT1/DXT3, and locks two.
@@ -23,6 +26,12 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
   scaled blit resamples the pixels and is genuinely a different texture.
 
 ### Fixed
+- The panel title, the startup banner and the log all said `INSERT` no matter what `HotKey` was set
+  to. They name the key actually configured.
+- On Direct3D 11 the overlay fetched the back buffer and created a render target view on every
+  presented frame even with nothing to draw, which is a driver-side resource creation per frame for
+  the whole time the panel is closed. The pass is skipped when neither the panel nor the banner is
+  on screen.
 - **Games could stall or freeze while video played or a save loaded.** A texture the game rewrites
   constantly, such as a video frame, was hashed in full on the game's own thread every time, and
   every distinct result became another row in the texture list. Saints Row 2's intro produced 268

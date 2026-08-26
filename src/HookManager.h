@@ -17,6 +17,38 @@ namespace TextureToolkit
         bool init();
         void shutdown();
 
+        // Creates the hook and hands back its trampoline WITHOUT arming it. Use when the detour
+        // needs the trampoline recorded somewhere before the first call can arrive: arming and
+        // publishing in one step leaves a window where the detour is live and has nothing to
+        // forward to. Pair with enable_hook.
+        template <typename T>
+        bool prepare_hook(void *target, void *detour, T **original)
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            MH_STATUS status = MH_CreateHook(target, detour, reinterpret_cast<void **>(original));
+            if (status != MH_OK && status != MH_ERROR_ALREADY_CREATED)
+            {
+                Logger::get().error("[HookManager] Failed to create hook at address 0x" +
+                    std::to_string(reinterpret_cast<uintptr_t>(target)) + ", MH_STATUS: " + std::to_string(status));
+                return false;
+            }
+            return true;
+        }
+
+        bool enable_hook(void *target)
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            MH_STATUS status = MH_EnableHook(target);
+            if (status != MH_OK && status != MH_ERROR_ENABLED)
+            {
+                Logger::get().error("[HookManager] Failed to enable hook at address 0x" +
+                    std::to_string(reinterpret_cast<uintptr_t>(target)) + ", MH_STATUS: " + std::to_string(status));
+                return false;
+            }
+            m_active_hooks[target] = nullptr;
+            return true;
+        }
+
         template <typename T>
         bool create_hook(void *target, void *detour, T **original)
         {

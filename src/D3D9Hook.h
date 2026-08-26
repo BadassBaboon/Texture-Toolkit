@@ -116,13 +116,9 @@ namespace TextureToolkit
         SwapChainPresent_t m_orig_swapchain_present = nullptr;
         Reset_t m_orig_reset = nullptr;
         CreateTexture_t m_orig_create_texture = nullptr;
-        LockRect_t m_orig_lock_rect = nullptr;
-        UnlockRect_t m_orig_unlock_rect = nullptr;
         SetTexture_t m_orig_set_texture = nullptr;
         UpdateTexture_t m_orig_update_texture = nullptr;
 
-        SurfaceLockRect_t m_orig_surface_lock_rect = nullptr;
-        SurfaceUnlockRect_t m_orig_surface_unlock_rect = nullptr;
         UpdateSurface_t m_orig_update_surface = nullptr;
         StretchRect_t m_orig_stretch_rect = nullptr;
 

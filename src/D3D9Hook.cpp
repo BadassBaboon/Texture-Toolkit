@@ -114,35 +114,102 @@ namespace TextureToolkit
     }
 
 
-    // A vtable is identified by the pair of function addresses we actually patch, so two vtables
-    // that share the same LockRect implementation are hooked once.
-    static uint64_t lock_key(void *a, void *b)
+
+    // One trampoline per hooked vtable.
+    //
+    // MinHook hands back a separate trampoline for each function it patches, and a trampoline is
+    // only valid for the implementation it was made from. Hooking a second vtable and then calling
+    // the first one's trampoline would run vtable A's LockRect against a vtable B texture, which is
+    // the wrong function for the object entirely. So each hooked vtable keeps its own.
+    //
+    // MinHook patches the function body and leaves the vtable slot pointing at the original
+    // address, so the slot itself is a stable key: read it off the object and look up the
+    // trampoline that belongs to it. Entries are only ever appended, never changed, so a reader
+    // needs no lock once it has seen the count.
+    template <typename LockFn, typename UnlockFn>
+    struct LockHookTable
     {
-        return (static_cast<uint64_t>(reinterpret_cast<uintptr_t>(a)) << 1) ^
-                static_cast<uint64_t>(reinterpret_cast<uintptr_t>(b));
+        struct Entry
+        {
+            void *lock_target;
+            LockFn lock_tramp;
+            UnlockFn unlock_tramp;
+        };
+
+        static constexpr int kMax = 16;
+        Entry entries[kMax] = {};
+        std::atomic<int> count{0};
+        std::mutex add_mutex;
+
+        // True if this vtable is new and was claimed by the caller, who must then fill it in.
+        bool claim(void *lock_target)
+        {
+            std::lock_guard<std::mutex> lock(add_mutex);
+            const int n = count.load(std::memory_order_relaxed);
+            for (int i = 0; i < n; ++i)
+            {
+                if (entries[i].lock_target == lock_target)
+                    return false;
+            }
+            return n < kMax;
+        }
+
+        void publish(void *lock_target, LockFn lock_tramp, UnlockFn unlock_tramp)
+        {
+            std::lock_guard<std::mutex> lock(add_mutex);
+            const int n = count.load(std::memory_order_relaxed);
+            if (n >= kMax)
+                return;
+            entries[n].lock_target = lock_target;
+            entries[n].lock_tramp = lock_tramp;
+            entries[n].unlock_tramp = unlock_tramp;
+            count.store(n + 1, std::memory_order_release); // publishes the entry above
+        }
+
+        const Entry *find(void *lock_target) const
+        {
+            const int n = count.load(std::memory_order_acquire);
+            for (int i = 0; i < n; ++i)
+            {
+                if (entries[i].lock_target == lock_target)
+                    return &entries[i];
+            }
+            return nullptr;
+        }
+    };
+
+    // Same signatures as the class typedefs, repeated here because those are private to D3D9Hook
+    // and this table lives at file scope.
+    typedef HRESULT(STDMETHODCALLTYPE *TexLock_fn)(IDirect3DTexture9 *, UINT, D3DLOCKED_RECT *, const RECT *, DWORD);
+    typedef HRESULT(STDMETHODCALLTYPE *TexUnlock_fn)(IDirect3DTexture9 *, UINT);
+    typedef HRESULT(STDMETHODCALLTYPE *SurfLock_fn)(IDirect3DSurface9 *, D3DLOCKED_RECT *, const RECT *, DWORD);
+    typedef HRESULT(STDMETHODCALLTYPE *SurfUnlock_fn)(IDirect3DSurface9 *);
+
+    static LockHookTable<TexLock_fn, TexUnlock_fn> s_texture_hooks;
+    static LockHookTable<SurfLock_fn, SurfUnlock_fn> s_surface_hooks;
+
+    // vtable slot 19 is IDirect3DTexture9::LockRect, 13 is IDirect3DSurface9::LockRect.
+    static void *texture_lock_slot(IDirect3DTexture9 *texture)
+    {
+        return (*reinterpret_cast<void ***>(texture))[19];
     }
 
-    // Returns true the first time a key is seen. Bounded so a pathological game cannot grow this
-    // without limit; a handful of distinct vtables is already unusual.
-    static bool remember_in(std::unordered_set<uint64_t> &seen, uint64_t key)
+    static void *surface_lock_slot(IDirect3DSurface9 *surface)
     {
-        static std::mutex mtx;
-        std::lock_guard<std::mutex> lock(mtx);
-        if (seen.size() >= 16)
-            return false;
-        return seen.insert(key).second;
+        return (*reinterpret_cast<void ***>(surface))[13];
     }
 
-    static bool remember_texture_vtable(uint64_t key)
+    // Unlock resolves the same way lock does, from the object's own vtable slot.
+    static HRESULT unlock_original(IDirect3DTexture9 *texture, UINT Level)
     {
-        static std::unordered_set<uint64_t> seen;
-        return remember_in(seen, key);
+        const auto *hooks = s_texture_hooks.find(texture_lock_slot(texture));
+        return (hooks != nullptr) ? hooks->unlock_tramp(texture, Level) : D3DERR_INVALIDCALL;
     }
 
-    static bool remember_surface_vtable(uint64_t key)
+    static HRESULT surface_unlock_original(IDirect3DSurface9 *surface)
     {
-        static std::unordered_set<uint64_t> seen;
-        return remember_in(seen, key);
+        const auto *hooks = s_surface_hooks.find(surface_lock_slot(surface));
+        return (hooks != nullptr) ? hooks->unlock_tramp(surface) : D3DERR_INVALIDCALL;
     }
 
     // Diagnostic budget for the per-texture debug lines.
@@ -592,22 +659,21 @@ namespace TextureToolkit
             //
             // Tracking the addresses we have already hooked makes this self-correcting: a new
             // vtable is hooked the moment a texture using it appears, and the log names it.
-            if (remember_texture_vtable(lock_key(vtable[19], vtable[20])))
+            if (s_texture_hooks.claim(vtable[19]))
             {
-                LockRect_t prev_lock = get().m_orig_lock_rect;
-                UnlockRect_t prev_unlock = get().m_orig_unlock_rect;
+                LockRect_t lock_tramp = nullptr;
+                UnlockRect_t unlock_tramp = nullptr;
 
-                const bool ok_lock = HookManager::get().create_hook(vtable[19], &Hooked_LockRect, reinterpret_cast<void **>(&get().m_orig_lock_rect));
-                const bool ok_unlock = HookManager::get().create_hook(vtable[20], &Hooked_UnlockRect, reinterpret_cast<void **>(&get().m_orig_unlock_rect));
+                // Both trampolines are obtained and published BEFORE either hook is armed, so a
+                // lock arriving the instant the patch lands always finds something to forward to.
+                const bool ok_lock = HookManager::get().prepare_hook(vtable[19], &Hooked_LockRect, &lock_tramp);
+                const bool ok_unlock = HookManager::get().prepare_hook(vtable[20], &Hooked_UnlockRect, &unlock_tramp);
 
-                // Only the first vtable owns the trampoline we call through. A later one is still
-                // hooked (so its locks reach us), but the original it would forward to is not the
-                // one we keep, and calling the wrong trampoline would corrupt the call. Keep the
-                // first and say so rather than silently overwriting it.
-                if (prev_lock != nullptr)
+                if (ok_lock && ok_unlock)
                 {
-                    get().m_orig_lock_rect = prev_lock;
-                    get().m_orig_unlock_rect = prev_unlock;
+                    s_texture_hooks.publish(vtable[19], lock_tramp, unlock_tramp);
+                    HookManager::get().enable_hook(vtable[19]);
+                    HookManager::get().enable_hook(vtable[20]);
                 }
 
                 Logger::get().info(std::string("[D3D9Hook] Hooked texture LockRect/UnlockRect on vtable 0x") +
@@ -622,18 +688,19 @@ namespace TextureToolkit
             {
                 void **surface_vtable = *reinterpret_cast<void ***>(pSurface);
 
-                if (remember_surface_vtable(lock_key(surface_vtable[13], surface_vtable[14])))
+                if (s_surface_hooks.claim(surface_vtable[13]))
                 {
-                    SurfaceLockRect_t prev_lock = get().m_orig_surface_lock_rect;
-                    SurfaceUnlockRect_t prev_unlock = get().m_orig_surface_unlock_rect;
+                    SurfaceLockRect_t lock_tramp = nullptr;
+                    SurfaceUnlockRect_t unlock_tramp = nullptr;
 
-                    const bool ok_lock = HookManager::get().create_hook(surface_vtable[13], &Hooked_SurfaceLockRect, reinterpret_cast<void **>(&get().m_orig_surface_lock_rect));
-                    const bool ok_unlock = HookManager::get().create_hook(surface_vtable[14], &Hooked_SurfaceUnlockRect, reinterpret_cast<void **>(&get().m_orig_surface_unlock_rect));
+                    const bool ok_lock = HookManager::get().prepare_hook(surface_vtable[13], &Hooked_SurfaceLockRect, &lock_tramp);
+                    const bool ok_unlock = HookManager::get().prepare_hook(surface_vtable[14], &Hooked_SurfaceUnlockRect, &unlock_tramp);
 
-                    if (prev_lock != nullptr)
+                    if (ok_lock && ok_unlock)
                     {
-                        get().m_orig_surface_lock_rect = prev_lock;
-                        get().m_orig_surface_unlock_rect = prev_unlock;
+                        s_surface_hooks.publish(surface_vtable[13], lock_tramp, unlock_tramp);
+                        HookManager::get().enable_hook(surface_vtable[13]);
+                        HookManager::get().enable_hook(surface_vtable[14]);
                     }
 
                     Logger::get().info(std::string("[D3D9Hook] Hooked surface LockRect/UnlockRect on vtable 0x") +
@@ -651,7 +718,11 @@ namespace TextureToolkit
 
     HRESULT STDMETHODCALLTYPE D3D9Hook::Hooked_LockRect(IDirect3DTexture9 *texture, UINT Level, D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD Flags)
     {
-        HRESULT hr = get().m_orig_lock_rect(texture, Level, pLockedRect, pRect, Flags);
+        const auto *hooks = s_texture_hooks.find(texture_lock_slot(texture));
+        if (hooks == nullptr)
+            return D3DERR_INVALIDCALL; // hooked but unpublished: cannot happen, and must not guess
+
+        HRESULT hr = hooks->lock_tramp(texture, Level, pLockedRect, pRect, Flags);
 
         // Skip tracking when we're inside injection (locking replacement textures)
         if (s_inside_injection)
@@ -700,7 +771,7 @@ namespace TextureToolkit
     {
         // Skip processing when we're inside injection (unlocking replacement textures)
         if (s_inside_injection)
-            return get().m_orig_unlock_rect(texture, Level);
+            return unlock_original(texture, Level);
 
         if (Level == 0)
         {
@@ -729,7 +800,7 @@ namespace TextureToolkit
             }
         }
 
-        return get().m_orig_unlock_rect(texture, Level);
+        return unlock_original(texture, Level);
     }
 
     HRESULT STDMETHODCALLTYPE D3D9Hook::Hooked_SetTexture(IDirect3DDevice9 *device, DWORD Stage, IDirect3DBaseTexture9 *pTexture)
@@ -956,7 +1027,11 @@ namespace TextureToolkit
 
     HRESULT STDMETHODCALLTYPE D3D9Hook::Hooked_SurfaceLockRect(IDirect3DSurface9 *surface, D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD Flags)
     {
-        HRESULT hr = get().m_orig_surface_lock_rect(surface, pLockedRect, pRect, Flags);
+        const auto *hooks = s_surface_hooks.find(surface_lock_slot(surface));
+        if (hooks == nullptr)
+            return D3DERR_INVALIDCALL;
+
+        HRESULT hr = hooks->lock_tramp(surface, pLockedRect, pRect, Flags);
 
         // Skip tracking when we're inside injection
         if (s_inside_injection)
@@ -1039,7 +1114,7 @@ namespace TextureToolkit
     {
         // Skip processing when we're inside injection
         if (s_inside_injection)
-            return get().m_orig_surface_unlock_rect(surface);
+            return surface_unlock_original(surface);
 
         IDirect3DTexture9 *texture = nullptr;
         if (SUCCEEDED(surface->GetContainer(__uuidof(IDirect3DTexture9), reinterpret_cast<void **>(&texture))) && texture != nullptr)
@@ -1070,6 +1145,6 @@ namespace TextureToolkit
             texture->Release();
         }
 
-        return get().m_orig_surface_unlock_rect(surface);
+        return surface_unlock_original(surface);
     }
 }

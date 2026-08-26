@@ -24,6 +24,11 @@ namespace TextureToolkit
         m_active = true;
     }
 
+    bool OSDBanner::is_active() const
+    {
+        return m_active && ConfigManager::get().get_config().show_osd_banner;
+    }
+
     void OSDBanner::draw_osd()
     {
         const auto &config = ConfigManager::get().get_config();
@@ -87,7 +92,7 @@ namespace TextureToolkit
             ImGui::Spacing();
             ImGui::TextColored(ImVec4(1.00f, 1.00f, 1.00f, alpha), "Press ");
             ImGui::SameLine();
-            ImGui::TextColored(ImVec4(0.20f, 1.00f, 0.40f, alpha), "INSERT");
+            ImGui::TextColored(ImVec4(0.20f, 1.00f, 0.40f, alpha), "%s", hotkey_name(config.hotkey).c_str());
             ImGui::SameLine();
             ImGui::TextColored(ImVec4(1.00f, 1.00f, 1.00f, alpha), " to toggle Texture Toolkit Control Panel");
 

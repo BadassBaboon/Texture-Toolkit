@@ -6,6 +6,10 @@
 
 namespace TextureToolkit
 {
+    // Printable name of a virtual-key code, for the panel title, the startup banner and the log.
+    // All three used to say "INSERT" whatever HotKey was actually set to.
+    std::string hotkey_name(uint32_t vk);
+
     struct Configuration
     {
         uint32_t hotkey = VK_INSERT; // Default: INSERT key (0x2D)

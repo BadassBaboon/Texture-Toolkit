@@ -104,7 +104,7 @@ namespace TextureToolkit
         D3D9Hook::get().init();
         D3D11Hook::get().init();
 
-        Logger::get().info("[Main] Initialization complete. Press INSERT to open Texture Toolkit UI.");
+        Logger::get().info("[Main] Initialization complete. Press " + hotkey_name(ConfigManager::get().get_config().hotkey) + " to open the Texture Toolkit panel.");
 
         start_startup_watchdog();
     }

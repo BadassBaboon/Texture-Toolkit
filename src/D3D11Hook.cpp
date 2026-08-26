@@ -4,6 +4,7 @@
 #include "TextureManager.h"
 #include "TextureToolkitUI.h"
 #include "Config.h"
+#include "OSDBanner.h"
 #include "Logger.h"
 #include <atomic>
 #include <imgui.h>
@@ -239,10 +240,12 @@ namespace TextureToolkit
         void *unmap_addr = ctx_vtable[15]; // Unmap is index 15
 
         HookManager::get().create_hook(ps_set_srv_addr, &Hooked_PSSetShaderResources, reinterpret_cast<void **>(&m_orig_ps_set_shader_resources));
+        HookManager::get().create_hook(ctx_vtable[25], &Hooked_VSSetShaderResources, reinterpret_cast<void **>(&m_orig_vs_set_shader_resources)); // VSSetShaderResources
+        HookManager::get().create_hook(ctx_vtable[67], &Hooked_CSSetShaderResources, reinterpret_cast<void **>(&m_orig_cs_set_shader_resources)); // CSSetShaderResources
         HookManager::get().create_hook(map_addr, &Hooked_Map, reinterpret_cast<void **>(&m_orig_map));
         HookManager::get().create_hook(unmap_addr, &Hooked_Unmap, reinterpret_cast<void **>(&m_orig_unmap));
 
-        Logger::get().info("[D3D11Hook] REAL GAME DEVICE CONTEXT INTERCEPTED! PSSetShaderResources, Map, Unmap hooks active.");
+        Logger::get().info("[D3D11Hook] REAL GAME DEVICE CONTEXT INTERCEPTED! Pixel, vertex and compute shader binding, Map and Unmap hooks active.");
     }
 
     void D3D11Hook::hook_dxgi_factory(IDXGIFactory *factory)
@@ -450,6 +453,13 @@ namespace TextureToolkit
         }
 
         TextureManager::get().on_frame();
+
+        // Nothing to draw. What this avoids is not the empty draw list, it is everything below:
+        // fetching the back buffer and creating a render target view every single frame in order
+        // to render nothing into it, which is a driver-side resource creation per frame for the
+        // entire time the panel is closed -- which is nearly always.
+        if (!TextureToolkitUI::is_visible() && !OSDBanner::get().is_active())
+            return;
 
         g_inside_imgui_render = true;
 
@@ -689,11 +699,14 @@ namespace TextureToolkit
         return get().m_orig_present(swapchain, SyncInterval, Flags);
     }
 
-    void STDMETHODCALLTYPE D3D11Hook::Hooked_PSSetShaderResources(ID3D11DeviceContext *context, UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews)
+    void D3D11Hook::bind_shader_resources(SetShaderResources_t original, ID3D11DeviceContext *context, UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews)
     {
+        if (original == nullptr)
+            return;
+
         if (ppShaderResourceViews == nullptr || NumViews == 0)
         {
-            get().m_orig_ps_set_shader_resources(context, StartSlot, NumViews, ppShaderResourceViews);
+            original(context, StartSlot, NumViews, ppShaderResourceViews);
             return;
         }
 
@@ -713,8 +726,26 @@ namespace TextureToolkit
                 any_replaced = true;
         }
 
-        get().m_orig_ps_set_shader_resources(context, StartSlot, NumViews,
+        original(context, StartSlot, NumViews,
             any_replaced ? s_replaced.data() : ppShaderResourceViews);
+    }
+
+    void STDMETHODCALLTYPE D3D11Hook::Hooked_PSSetShaderResources(ID3D11DeviceContext *context, UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews)
+    {
+        bind_shader_resources(get().m_orig_ps_set_shader_resources, context, StartSlot, NumViews, ppShaderResourceViews);
+    }
+
+    // A texture sampled by a vertex or compute shader never reached the pixel stage, so it was
+    // invisible to the panel and could not be replaced at all. Terrain that displaces vertices from
+    // a heightmap, and anything a compute pass reads, land here.
+    void STDMETHODCALLTYPE D3D11Hook::Hooked_VSSetShaderResources(ID3D11DeviceContext *context, UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews)
+    {
+        bind_shader_resources(get().m_orig_vs_set_shader_resources, context, StartSlot, NumViews, ppShaderResourceViews);
+    }
+
+    void STDMETHODCALLTYPE D3D11Hook::Hooked_CSSetShaderResources(ID3D11DeviceContext *context, UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews)
+    {
+        bind_shader_resources(get().m_orig_cs_set_shader_resources, context, StartSlot, NumViews, ppShaderResourceViews);
     }
 
     HRESULT STDMETHODCALLTYPE D3D11Hook::Hooked_Map(ID3D11DeviceContext *context, ID3D11Resource *pResource, UINT Subresource, D3D11_MAP MapType, UINT MapFlags, D3D11_MAPPED_SUBRESOURCE *pMappedResource)

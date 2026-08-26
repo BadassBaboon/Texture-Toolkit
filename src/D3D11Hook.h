@@ -80,6 +80,13 @@ namespace TextureToolkit
         static HRESULT STDMETHODCALLTYPE Hooked_CreateSwapChainForHwnd(IDXGIFactory2 *factory, IUnknown *pDevice, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1 *pDesc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *pFullscreenDesc, IDXGIOutput *pRestrictToOutput, IDXGISwapChain1 **ppSwapChain);
         static HRESULT STDMETHODCALLTYPE Hooked_Present(IDXGISwapChain *swapchain, UINT SyncInterval, UINT Flags);
         static void STDMETHODCALLTYPE Hooked_PSSetShaderResources(ID3D11DeviceContext *context, UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews);
+        static void STDMETHODCALLTYPE Hooked_VSSetShaderResources(ID3D11DeviceContext *context, UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews);
+        static void STDMETHODCALLTYPE Hooked_CSSetShaderResources(ID3D11DeviceContext *context, UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews);
+
+        // The three stages differ only in which original they forward to, so the substitution
+        // itself lives in one place.
+        typedef void(STDMETHODCALLTYPE *SetShaderResources_t)(ID3D11DeviceContext *, UINT, UINT, ID3D11ShaderResourceView *const *);
+        static void bind_shader_resources(SetShaderResources_t original, ID3D11DeviceContext *context, UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews);
         static HRESULT STDMETHODCALLTYPE Hooked_Map(ID3D11DeviceContext *context, ID3D11Resource *pResource, UINT Subresource, D3D11_MAP MapType, UINT MapFlags, D3D11_MAPPED_SUBRESOURCE *pMappedResource);
         static void STDMETHODCALLTYPE Hooked_Unmap(ID3D11DeviceContext *context, ID3D11Resource *pResource, UINT Subresource);
 
@@ -108,6 +115,8 @@ namespace TextureToolkit
         CreateSwapChainForHwnd_t m_orig_create_swapchain_for_hwnd = nullptr;
         Present_t m_orig_present = nullptr;
         PSSetShaderResources_t m_orig_ps_set_shader_resources = nullptr;
+        SetShaderResources_t m_orig_vs_set_shader_resources = nullptr;
+        SetShaderResources_t m_orig_cs_set_shader_resources = nullptr;
         Map_t m_orig_map = nullptr;
         Unmap_t m_orig_unmap = nullptr;
 

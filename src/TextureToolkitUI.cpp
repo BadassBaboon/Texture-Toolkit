@@ -281,7 +281,8 @@ namespace TextureToolkit
         }
 
         ImGui::SetNextWindowSize(ImVec2(920, 620), ImGuiCond_FirstUseEver);
-        if (!ImGui::Begin("Texture Toolkit  (INSERT to close)", &s_show_ui))
+        const std::string title = "Texture Toolkit  (" + hotkey_name(ConfigManager::get().get_config().hotkey) + " to close)###TextureToolkit";
+        if (!ImGui::Begin(title.c_str(), &s_show_ui))
         {
             ImGui::End();
             return;

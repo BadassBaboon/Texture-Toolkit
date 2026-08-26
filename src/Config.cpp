@@ -2,9 +2,35 @@
 #include "Logger.h"
 #include <fstream>
 #include <sstream>
+#include <cstdio>
+
+#include <imgui.h>
+
+// Defined in imgui_impl_win32.cpp with external linkage, but not declared in its header, so it is
+// declared here rather than by reaching into the backend's source.
+ImGuiKey ImGui_ImplWin32_KeyEventToImGuiKey(WPARAM wParam, LPARAM lParam);
 
 namespace TextureToolkit
 {
+    std::string hotkey_name(uint32_t vk)
+    {
+        // ImGui's own names rather than GetKeyNameTextW, which needs the extended-key bit set
+        // correctly (Insert otherwise comes back as "Num 0"), returns nothing at all for Pause, and
+        // localises into glyphs the Latin-only ImGui font cannot draw.
+        //
+        // The scancode in lParam is not optional here: punctuation keys are identified by scancode
+        // because their virtual key differs per layout (tilde is VK_OEM_3 on US, VK_OEM_8 on UK,
+        // VK_OEM_7 on French).
+        const LPARAM lparam = static_cast<LPARAM>(MapVirtualKeyW(vk, MAPVK_VK_TO_VSC)) << 16;
+        const ImGuiKey key = ImGui_ImplWin32_KeyEventToImGuiKey(static_cast<WPARAM>(vk), lparam);
+        if (key != ImGuiKey_None)
+            return ImGui::GetKeyName(key);
+
+        char buf[16] = {};
+        std::snprintf(buf, sizeof(buf), "key 0x%02X", vk);
+        return buf;
+    }
+
     ConfigManager &ConfigManager::get()
     {
         static ConfigManager instance;

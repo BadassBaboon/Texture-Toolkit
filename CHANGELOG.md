@@ -12,6 +12,12 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-26
+
+Games that never showed a texture now work, and two ways a game could stall are gone. Nothing here
+changes how a texture is identified: hashes, file names and folder layout are exactly as 1.0.0 left
+them, so every mod built against 1.0.0 keeps working untouched.
+
 ### Added
 - **Direct3D 9 textures whose vtable differed from the first one created are seen.** Only the first
   created texture's `LockRect` and `UnlockRect` were hooked, on the assumption that every
@@ -23,16 +29,21 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
 - **Textures bound to vertex and compute shaders are seen.** Only the pixel stage was hooked, so
   anything sampled by a vertex shader (terrain displaced from a heightmap, for one) or read by a
   compute pass never appeared in the panel and could not be replaced at all.
-- **Direct3D 9 textures loaded through D3DX are now tracked.** Games of that era hand a file to
-  `D3DXCreateTextureFromFile*` and never lock the texture themselves, so their art was created but
-  never seen: Street Racing Syndicate creates 1487 textures, 484 of them DXT1/DXT3, and locks two.
-  The six D3DX texture loaders are hooked in whatever `d3dx9_*.dll` the game has already loaded.
-  Nothing is ever loaded by us, so a game that ships no D3DX is untouched.
+- **Direct3D 9 textures loaded through D3DX are tracked.** A game can hand a file to
+  `D3DXCreateTextureFromFile*` and never lock the texture itself, in which case its art was created
+  but never seen. All six D3DX texture loaders are hooked, in whatever `d3dx9_*.dll` the game has
+  already loaded; nothing is ever loaded by us, so a game shipping no D3DX is untouched. No game is
+  yet known to need this. It is in because the loaders are a real upload path we did not watch.
 - `UpdateSurface` and `StretchRect` carry the content tag from a staged surface to the one the game
   renders, the way `UpdateTexture` already did. Only whole-surface copies qualify; a partial or
   scaled blit resamples the pixels and is genuinely a different texture.
 
 ### Fixed
+- **An injected texture showed as "Pending" once the game re-uploaded it.** The tracked record is
+  rebuilt whenever a texture's pixels arrive again, and the rebuilt one carried no replacement even
+  though the replacement itself was untouched and still on screen. The texture went on rendering
+  replaced while the panel said it was not, which is the panel lying about the one thing it exists
+  to report. Seen in Bully, where art is re-uploaded routinely.
 - Opening the panel could stall a game that tracks thousands of textures. The list was rebuilt from
   the whole tracked map on every frame, under the lock every texture upload also needs, copying ten
   strings per row. Saints Row 2 reaches 2615 textures and stopped dead when the panel was opened
@@ -62,6 +73,10 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
   never appeared in the log at all.
 - A lock on a surface with no parent texture (offscreen-plain or render-target) returned silently,
   which is exactly the case that is hardest to diagnose from a log. It is reported now.
+
+### Compatibility
+- The hash, the 16-hex file naming and the `<ResourceRoot>/inject|dump` layout are unchanged from
+  1.0.0. A mod published against 1.0.0 needs no renaming and no re-export.
 
 ## [1.0.0] - 2026-08-24
 
@@ -133,5 +148,6 @@ First public release.
   rather than guessed at, so adding one later makes new textures moddable without changing a hash
   that already exists.
 
-[Unreleased]: https://github.com/BadassBaboon/Texture-Toolkit/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/BadassBaboon/Texture-Toolkit/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/BadassBaboon/Texture-Toolkit/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/BadassBaboon/Texture-Toolkit/releases/tag/v1.0.0

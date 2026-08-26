@@ -13,6 +13,13 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
 ## [Unreleased]
 
 ### Added
+- **Direct3D 9 textures whose vtable differed from the first one created are seen.** Only the first
+  created texture's `LockRect` and `UnlockRect` were hooked, on the assumption that every
+  `IDirect3DTexture9` shares one vtable. Most games do. Street Racing Syndicate does not: it created
+  1446 textures whose pixels could only have arrived through a lock, and four were visible to us.
+  Every distinct vtable is hooked as soon as a texture using it appears, which made that game work.
+- [GAMES.md](GAMES.md), recording the games Texture Toolkit has been run in and what decides whether
+  a game works at all. It is a record of what has been tried, not a supported-hardware list.
 - **Textures bound to vertex and compute shaders are seen.** Only the pixel stage was hooked, so
   anything sampled by a vertex shader (terrain displaced from a heightmap, for one) or read by a
   compute pass never appeared in the panel and could not be replaced at all.
@@ -26,6 +33,10 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
   scaled blit resamples the pixels and is genuinely a different texture.
 
 ### Fixed
+- Opening the panel could stall a game that tracks thousands of textures. The list was rebuilt from
+  the whole tracked map on every frame, under the lock every texture upload also needs, copying ten
+  strings per row. Saints Row 2 reaches 2615 textures and stopped dead when the panel was opened
+  during a load. The list is rebuilt a few times a second, and at once after Reload or a dump.
 - The panel title, the startup banner and the log all said `INSERT` no matter what `HotKey` was set
   to. They name the key actually configured.
 - On Direct3D 11 the overlay fetched the back buffer and created a render target view on every

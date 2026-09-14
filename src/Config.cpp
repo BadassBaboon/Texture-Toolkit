@@ -97,6 +97,19 @@ namespace TextureToolkit
         m_config.verbose = GetPrivateProfileIntW(L"TextureToolkit", L"Verbose", 0, ini_w) != 0;
 
         Logger::get().info("[ConfigManager] Configuration loaded from " + m_ini_path.string());
+
+        // The values, not just the path. Every diagnosis from a user's log has to start by knowing
+        // what the settings were: a texture missing from the panel because ShowCurrentFrameOnly is
+        // hiding it looks exactly like a texture that was never tracked at all.
+        Logger::get().info(std::string("[ConfigManager] HotKey=") + hotkey_name(m_config.hotkey) +
+                           " ResourceRoot=" + m_config.resource_root.string() +
+                           " EnableInjection=" + (m_config.enable_injection ? "1" : "0") +
+                           " AutoDump=" + (m_config.auto_dump ? "1" : "0") +
+                           " FilterSmallTextures=" + (m_config.filter_small_textures ? "1" : "0") +
+                           " ShowCurrentFrameOnly=" + (m_config.show_current_frame_only ? "1" : "0") +
+                           " AcceptSpecialKNames=" + (m_config.accept_sk_names ? "1" : "0") +
+                           " ShowOSDBanner=" + (m_config.show_osd_banner ? "1" : "0") +
+                           " Verbose=" + (m_config.verbose ? "1" : "0"));
     }
 
     void ConfigManager::save()
@@ -130,6 +143,15 @@ namespace TextureToolkit
              << "Verbose=" << (m_config.verbose ? 1 : 0) << "\n";
 
         file.close();
+        // The values on save as well as on load. A user toggling a checkbox mid-session and a user
+        // never touching it produced the same line, so a log could not say which setting was in
+        // force when the thing they were reporting happened.
         Logger::get().info("[ConfigManager] Configuration saved to " + m_ini_path.string());
+        Logger::get().info(std::string("[ConfigManager] Now: EnableInjection=") + (m_config.enable_injection ? "1" : "0") +
+                           " AutoDump=" + (m_config.auto_dump ? "1" : "0") +
+                           " FilterSmallTextures=" + (m_config.filter_small_textures ? "1" : "0") +
+                           " ShowCurrentFrameOnly=" + (m_config.show_current_frame_only ? "1" : "0") +
+                           " AcceptSpecialKNames=" + (m_config.accept_sk_names ? "1" : "0") +
+                           " Verbose=" + (m_config.verbose ? "1" : "0"));
     }
 }

@@ -936,6 +936,18 @@ namespace TextureToolkit
         return std::filesystem::path();
     }
 
+    uint64_t TextureManager::get_tagged_hash9(IDirect3DBaseTexture9 *texture) const
+    {
+        if (texture == nullptr)
+            return 0;
+
+        uint64_t hash = 0;
+        DWORD size = sizeof(hash);
+        if (SUCCEEDED(texture->GetPrivateData(TT_HASH_GUID, &hash, &size)) && size == sizeof(hash))
+            return hash;
+        return 0;
+    }
+
     void TextureManager::copy_tag9(IDirect3DBaseTexture9 *src, IDirect3DBaseTexture9 *dst)
     {
         if (src == nullptr || dst == nullptr)
@@ -1804,11 +1816,12 @@ namespace TextureToolkit
         return created;
     }
 
-    std::vector<TextureDetails> TextureManager::get_active_textures()
+    std::vector<TextureDetails> TextureManager::get_active_textures(size_t *hidden_out)
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         std::vector<TextureDetails> result;
         result.reserve(m_tracked_textures.size());
+        size_t hidden = 0;
 
         for (auto &pair : m_tracked_textures)
         {
@@ -1824,10 +1837,16 @@ namespace TextureToolkit
             if (show_current_frame_only)
             {
                 if (pair.second.last_seen_frame == 0 || (m_frame_count > 0 && pair.second.last_seen_frame + 60 < m_frame_count))
+                {
+                    ++hidden;
                     continue;
+                }
             }
             result.push_back(pair.second);
         }
+
+        if (hidden_out != nullptr)
+            *hidden_out = hidden;
         return result;
     }
 

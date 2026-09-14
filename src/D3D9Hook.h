@@ -32,6 +32,13 @@ namespace TextureToolkit
         // game's render path" apart from "the game never rendered".
         static std::atomic<uint64_t> s_present_count;
 
+        // Asks for every texture bound during the next drawn frame to be written to the log, once,
+        // in full. The per-texture debug budget deliberately caps ordinary logging at a handful of
+        // textures per session, which is right for a log you read afterwards and useless for the
+        // question users actually arrive with: "what is the thing I am looking at right now". One
+        // frame is a bounded answer to that.
+        static void request_frame_capture();
+
         // Re-entrancy guard: set true while creating replacement textures
         // to prevent our hooks from re-entering the injection path
         static thread_local bool s_inside_injection;

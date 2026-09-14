@@ -199,6 +199,46 @@ namespace TextureToolkit
         return (*reinterpret_cast<void ***>(surface))[13];
     }
 
+
+    // Describe what is actually being drawn with, not just its address. The question a user arrives
+    // with is "the texture I can see is not in the panel", and the answer is usually here: a render
+    // target has no pixels we were ever given, and art that never passed through a lock has nothing
+    // to hash.
+    static std::string describe_bound_texture(IDirect3DBaseTexture9 *pTexture)
+    {
+        std::string detail;
+        IDirect3DTexture9 *tex2d = nullptr;
+        if (SUCCEEDED(pTexture->QueryInterface(__uuidof(IDirect3DTexture9), reinterpret_cast<void **>(&tex2d))) && tex2d != nullptr)
+        {
+            D3DSURFACE_DESC d = {};
+            if (SUCCEEDED(tex2d->GetLevelDesc(0, &d)))
+            {
+                const char *pool = (d.Pool == D3DPOOL_MANAGED) ? "MANAGED"
+                                 : (d.Pool == D3DPOOL_DEFAULT) ? "DEFAULT"
+                                 : (d.Pool == D3DPOOL_SYSTEMMEM) ? "SYSTEMMEM" : "other";
+                detail = " " + std::to_string(d.Width) + "x" + std::to_string(d.Height) +
+                         " fmt=" + std::to_string(static_cast<uint32_t>(d.Format)) +
+                         " usage=0x" + hex_string(d.Usage) + " pool=" + pool;
+                if ((d.Usage & D3DUSAGE_RENDERTARGET) != 0)
+                    detail += " RENDERTARGET (drawn by the game at runtime; no file behind it, cannot be replaced)";
+            }
+            tex2d->Release();
+        }
+        return detail;
+    }
+
+
+    // Set by the panel, cleared when the frame it applies to has been presented.
+    static std::atomic<bool> s_capture_frame{false};
+    static std::atomic<int> s_capture_count{0};
+
+    void D3D9Hook::request_frame_capture()
+    {
+        s_capture_count.store(0, std::memory_order_relaxed);
+        s_capture_frame.store(true, std::memory_order_release);
+        Logger::get().info("[D3D9Hook] ---- capturing every texture bound in the next frame ----");
+    }
+
     // Unlock resolves the same way lock does, from the object's own vtable slot.
     static HRESULT unlock_original(IDirect3DTexture9 *texture, UINT Level)
     {
@@ -544,7 +584,12 @@ namespace TextureToolkit
             static bool s_logged = false;
             if (!s_logged) { s_logged = true; Logger::get().info("[D3D9Hook] First Present() call; overlay renders through Present."); }
 
-            s_present_count.fetch_add(1, std::memory_order_relaxed);
+            if (s_capture_frame.exchange(false, std::memory_order_acq_rel))
+            Logger::get().info("[D3D9Hook] ---- end of frame capture, " +
+                               std::to_string(s_capture_count.load(std::memory_order_relaxed)) +
+                               " texture bind(s) this frame ----");
+
+        s_present_count.fetch_add(1, std::memory_order_relaxed);
             s_in_present = true;
             get().m_device = device;
             get().render_imgui(device);
@@ -805,9 +850,33 @@ namespace TextureToolkit
 
     HRESULT STDMETHODCALLTYPE D3D9Hook::Hooked_SetTexture(IDirect3DDevice9 *device, DWORD Stage, IDirect3DBaseTexture9 *pTexture)
     {
-        if (pTexture != nullptr && should_log_texture("SetTexture", pTexture))
+        const bool capturing = (pTexture != nullptr) && s_capture_frame.load(std::memory_order_acquire);
+
+        if (capturing)
         {
-            Logger::get().debug("[D3D9Hook] SetTexture: Stage=" + std::to_string(Stage) + " pTexture=0x" + std::to_string(reinterpret_cast<uintptr_t>(pTexture)));
+            // Everything, not a sample: the whole point is that the texture being looked for is
+            // somewhere in this list. The hash is what the panel lists it under, so it is the
+            // thing that turns "which of these 1377 is my livery" into a lookup.
+            const int n = s_capture_count.fetch_add(1, std::memory_order_relaxed);
+            if (n < 512)
+            {
+                std::string detail = describe_bound_texture(pTexture);
+                const uint64_t hash = TextureManager::get().get_tagged_hash9(pTexture);
+
+                char hash_text[32] = "untracked";
+                if (hash != 0)
+                    std::snprintf(hash_text, sizeof(hash_text), "%016llX", static_cast<unsigned long long>(hash));
+
+                Logger::get().info("[D3D9Hook] frame-capture stage=" + std::to_string(Stage) +
+                                   " hash=" + hash_text + detail);
+            }
+        }
+
+        if (!capturing && pTexture != nullptr && should_log_texture("SetTexture", pTexture))
+        {
+            Logger::get().debug("[D3D9Hook] SetTexture: Stage=" + std::to_string(Stage) +
+                                " pTexture=0x" + std::to_string(reinterpret_cast<uintptr_t>(pTexture)) +
+                                describe_bound_texture(pTexture));
         }
 
         IDirect3DBaseTexture9 *pReplacement = TextureManager::get().get_replacement_texture9(pTexture);

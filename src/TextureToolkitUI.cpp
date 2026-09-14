@@ -1,5 +1,6 @@
 #include "TextureToolkitUI.h"
 #include "TextureManager.h"
+#include "D3D9Hook.h"
 #include "OSDBanner.h"
 #include "Config.h"
 #include "Logger.h"
@@ -321,6 +322,17 @@ namespace TextureToolkit
             ConfigManager::get().save();
         }
 
+        if (ImGui::Button("Log this frame"))
+        {
+            D3D9Hook::request_frame_capture();
+            SetStatusMessage("Wrote every texture drawn this frame to the log.");
+        }
+        ImGui::SetItemTooltip("Writes every texture the game draws with in the next frame to the log,\n"
+                              "with its hash, size, format and pool.\n"
+                              "Point the camera at what you are trying to find, then press this:\n"
+                              "whatever it is drawn with is in that list.");
+        ImGui::SameLine();
+
         if (ImGui::Button("Reload injected textures"))
         {
             tm.rescan_injected();
@@ -354,11 +366,12 @@ namespace TextureToolkit
         // needs -- the game stopped dead the moment the panel was opened during a load. A texture
         // list does not need to be rebuilt sixty times a second.
         static std::vector<TextureDetails> s_snapshot;
+        static size_t s_hidden_by_scene_filter = 0;
         static double s_snapshot_time = -1.0;
         const double now = ImGui::GetTime();
         if (s_snapshot_time < 0.0 || (now - s_snapshot_time) >= 0.25 || s_force_refresh)
         {
-            s_snapshot = tm.get_active_textures();
+            s_snapshot = tm.get_active_textures(&s_hidden_by_scene_filter);
             s_snapshot_time = now;
             s_force_refresh = false;
         }
@@ -375,6 +388,20 @@ namespace TextureToolkit
         }
 
         ImGui::Text("%zu tracked", textures.size());
+
+        // A texture the game uploads but never draws with is tracked and then filtered straight
+        // back out, which reads as "the tool cannot see it" when the truth is that the list is
+        // hiding it. Say how many, and where the switch is.
+        if (s_hidden_by_scene_filter > 0)
+        {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.75f, 0.75f, 0.40f, 1.0f), "  (%zu hidden)", s_hidden_by_scene_filter);
+            ImGui::SetItemTooltip("Tracked, but not drawn in the current scene.\n"
+                                  "Textures the game uploads without ever drawing them, such as art\n"
+                                  "composited into a render target, live here.\n"
+                                  "Turn off \"Current scene only\" to list them.");
+        }
+
         ImGui::SameLine();
         ImGui::TextColored(kColInjected, "  %zu injected", injected);
         if (pending > 0)

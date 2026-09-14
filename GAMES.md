@@ -19,6 +19,7 @@ Textures appear in the panel, and dumping and replacement both work.
 | Grand Theft Auto IV: Complete Edition | Direct3D 9 | Verified with a set of ASI and script mods loaded. |
 | Street Racing Syndicate | Direct3D 9 | Needed the multi-vtable fix; see below. |
 | Juiced | Direct3D 9 | |
+| Juiced 2: Hot Import Nights | Direct3D 9 | Car liveries are composited into render targets and cannot be replaced. |
 | Total Overdose | Direct3D 9 | |
 | Need for Speed: The Run | Direct3D 11 | |
 | Spec Ops: The Line | Direct3D 11 | |
@@ -55,6 +56,15 @@ that, and the ones that fail usually fail for one of these reasons.
   `IDirect3DTexture9` vtable, and most do. Street Racing Syndicate does not: it created 1446
   textures whose pixels could only have arrived through a lock, and four of them were visible to us.
   Every distinct vtable is hooked now, which is what made that game work.
+- **Art that is never drawn with.** A texture the game uploads and then only copies from, or
+  composites into a render target, is tracked but never bound. It leaves the scene view about a
+  second later, and the panel says how many are hidden that way. Turn off "Current scene only" to
+  list them. Replacement still will not reach them: a replacement is substituted when the game binds
+  a texture to draw, and these are never bound.
+- **Render targets.** A texture the game draws into at runtime has no file behind it and no pixels
+  we were ever handed, so it cannot be hashed, dumped or replaced. Juiced 2 composites its car
+  liveries into 512x512 and 1024x1024 render targets, which is why the livery on the car cannot be
+  found in the panel while the art it is built from can.
 - **DirectX 8 through a wrapper.** The overlay appears because the wrapper renders with Direct3D 9,
   but the wrapper fills its textures internally without a call we can hook. See
   [Limitations](README.md#limitations).

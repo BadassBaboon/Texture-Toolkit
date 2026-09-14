@@ -90,7 +90,12 @@ namespace TextureToolkit
         bool accept_sk_names = true;   // also resolve Special K-named files in inject/
 
         // Active Texture Queries
-        std::vector<TextureDetails> get_active_textures();
+        // hidden_out receives how many tracked textures the scene filter removed. A texture the
+        // game uploads but never draws with (livery art composited into a render target, for one)
+        // is registered and then never bound, so it drops out of the scene view about a second
+        // later and the panel gives no sign it was ever there. Reporting the count is what turns
+        // "the tool cannot see my texture" into "the filter is hiding it".
+        std::vector<TextureDetails> get_active_textures(size_t *hidden_out = nullptr);
 
         // Injection health, for the panel: how many DDS files were found, how many are currently
         // applied, and how many were rejected. Surfacing "failed" is what stops a user having to
@@ -124,6 +129,10 @@ namespace TextureToolkit
         // copies a tagged SYSTEMMEM texture into the DEFAULT texture it actually renders, so
         // the bound texture becomes tracked, previewable and injectable.
         void copy_tag9(IDirect3DBaseTexture9 *src, IDirect3DBaseTexture9 *dst);
+
+        // The content hash tagged onto a resource, or 0 if it carries none. Lets the hook layer
+        // report what a bound texture is without reaching for the manager's internals.
+        uint64_t get_tagged_hash9(IDirect3DBaseTexture9 *texture) const;
 
         // Virtual Replacements for DX11
         ID3D11ShaderResourceView *get_replacement_srv11(ID3D11ShaderResourceView *orig);

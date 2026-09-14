@@ -12,6 +12,23 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
 
 ## [Unreleased]
 
+### Added
+- **"Log this frame" in the panel.** Writes every texture the game draws with in the next frame to
+  the log, each with its hash, size, format, usage and pool. The ordinary per-texture logging is
+  capped at a handful of textures per session, which suits a log read afterwards and cannot answer
+  the question users actually arrive with: which of these hundreds is the thing on screen. Point the
+  camera at it, press the button, and whatever it is drawn with is in that list.
+- The configuration values are logged when settings are saved, not only at startup. Toggling a
+  checkbox mid-session and never touching it used to produce the same line.
+- The log records the configuration values in use, not only where the ini was read from. A texture
+  hidden by `ShowCurrentFrameOnly` used to be indistinguishable in a log from one never tracked.
+- With `Verbose=1`, a bound texture is described as it is bound: dimensions, format, usage and pool,
+  and a plain statement when it is a render target that has no file behind it and cannot be
+  replaced. This answers "the texture I can see is not in the panel" straight from a log.
+- The panel reports how many tracked textures the scene filter is hiding, and says where the switch
+  is. Art the game uploads but never draws with, such as livery pieces composited into a render
+  target, is tracked and then filtered straight back out, which reads as the tool failing to see it.
+
 ## [1.1.0] - 2026-08-26
 
 Games that never showed a texture now work, and two ways a game could stall are gone. Nothing here

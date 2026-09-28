@@ -83,6 +83,7 @@ AutoDump=0
 FilterSmallTextures=1
 ShowCurrentFrameOnly=1
 AcceptSpecialKNames=1
+HashAlgorithm=0
 ShowOSDBanner=1
 Verbose=0
 ```
@@ -94,6 +95,13 @@ Verbose=0
 - `FilterSmallTextures`: ignore textures under 16x16.
 - `ShowCurrentFrameOnly`: list only textures drawn in the current scene.
 - `AcceptSpecialKNames`: also load files named the way Special K names them. Our own naming always wins when both exist for the same texture.
+- `HashAlgorithm`: which content hash identifies a texture. `0` (default) is the current 64-bit
+  hash. `1` switches tracking, dumping and injection to Texture Toolkit v1.0's 32-bit hash and its
+  8-hex-digit file naming, so a mod folder still named that way keeps working unmodified. `2` is the
+  same as `1` and also writes `<ResourceRoot>/hash_migrate.txt`, one `<oldhash> <newhash>` line for
+  every texture that has a v1.0 replacement file, so that folder can be renamed to the current
+  naming and `HashAlgorithm` set back to `0`. A file matched by the legacy naming cannot be told
+  apart from a Special K pack while modes `1`/`2` are active, since both use 8 hex digits.
 - `ShowOSDBanner`: show the startup banner.
 - `Verbose`: write per-texture debug lines to the log; leave off for normal use, since it slows the game.
 
@@ -164,6 +172,52 @@ compatibility naming is additive by construction and cannot rename anything.
 The set of pixel formats Texture Toolkit recognises is deliberately **additive**. A format it cannot
 positively identify is skipped rather than guessed at, so adding support for one later can only make
 new textures moddable -- it can never change a hash that already exists.
+
+## Upgrading from v1.0
+
+Texture Toolkit v1.0 identified textures with a different hash: a 32-bit CRC-32, named as 8
+uppercase hex digits (`66882833.dds`), and on Direct3D 11 computed over whatever row pitch the
+driver happened to report for that texture. v1.1.0 replaced it with the current 64-bit hash
+specifically to remove that driver dependency (see [Compatibility](#compatibility)), which also
+means a v1.0 `inject/` folder matches nothing under a current build: every hash in it is simply the
+wrong number for what is on screen now.
+
+This is the only hash change this project has ever made, and the only one `HashAlgorithm` exists to
+bridge -- it is a one-time compatibility path off v1.0, not an opening for routine hash changes going
+forward. The guarantee in [Compatibility](#compatibility) still holds for the current algorithm. The
+old algorithm itself lives on, unchanged, in `TextureHashLegacy.h`/`.cpp`.
+
+Two ways to move on from a v1.0 mod folder, both set with `HashAlgorithm` in `TextureToolkit.ini`:
+
+### Keep using the v1.0 files unmodified
+
+Set `HashAlgorithm=1`. Tracking, dumping and injection all switch to v1.0's algorithm and its
+8-hex-digit naming, so an existing `inject/` folder works exactly as it did under v1.0, with nothing
+renamed. This is the quickest way back to a working mod, and a reasonable place to stop if there is
+no interest in ever moving off it.
+
+The trade-off: while this is active, an 8-hex-digit file cannot be told apart from a Special
+K-named one (both are 8 hex digits), and any texture *added* to the mod from here on would need to
+be dumped and hashed under the legacy algorithm too, which nothing outside this compatibility mode
+does. Treat `HashAlgorithm=1` as a way to keep old assets running, not as an ongoing way of working.
+
+### Build a mapping to the current naming
+
+Set `HashAlgorithm=2`. This does everything `1` does, and also writes
+`<ResourceRoot>/hash_migrate.txt`: one `<oldhash> <newhash>` line for every texture that both (a)
+the game has drawn this session and (b) already has a v1.0-named replacement file in `inject/`. Play
+through the game -- the more of it is seen, the more of the mod's textures get a line -- and the
+file is appended to across restarts rather than overwritten, so this can be spread across as many
+sessions as it takes to see everything the mod replaces.
+
+[`tools/find_unmigrated_legacy_dds.sh`](tools/find_unmigrated_legacy_dds.sh), run from the `TT`
+folder, lists any 8-hex-digit file in `inject/` that has not yet earned a line in
+`hash_migrate.txt`, so what is still missing can be checked without reading the mapping file by eye.
+
+Once `hash_migrate.txt` covers every file that matters, rename each `<oldhash>.dds` to
+`<newhash>.dds` using its line, and set `HashAlgorithm` back to `0`. From there the mod runs on the
+current, driver-independent hash like any other, and `HashAlgorithm`/`hash_migrate.txt` are no
+longer needed.
 
 ## Limitations
 

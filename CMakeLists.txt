@@ -74,6 +74,7 @@ set(SOURCES
     src/TextureManager.cpp
     src/TextureToolkitUI.cpp
     src/TextureHash.cpp
+    src/TextureHashLegacy.cpp
     src/DDSLoader.cpp
     TextureToolkit.def
     ${MINHOOK_SOURCES}

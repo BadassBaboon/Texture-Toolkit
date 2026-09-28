@@ -27,6 +27,16 @@ namespace TextureToolkit
         // Also accept texture packs named the way Special K names them (CRC-32C of the top mip).
         bool accept_sk_names = true;
 
+        // Which content-hash algorithm identifies textures:
+        //   0 = current 64-bit hash (default; no change from ordinary v1.1+ behaviour).
+        //   1 = the 32-bit hash Texture Toolkit v1.0 used, with its 8-hex-digit naming, so a
+        //       mod folder that still carries v1.0 file names loads without being renamed.
+        //   2 = same as 1, and also writes "<ResourceRoot>/hash_migrate.txt" with one
+        //       "<oldhash> <newhash>" line per texture that has a v1.0 replacement file, so that
+        //       folder can be renamed to the current naming. See TextureHashLegacy.h.
+        // Anything else is treated as 0.
+        int hash_algorithm = 0;
+
         bool show_osd_banner = true;
         float osd_duration_seconds = 6.0f;
 

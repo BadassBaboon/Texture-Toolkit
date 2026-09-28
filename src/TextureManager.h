@@ -10,7 +10,9 @@
 #include <mutex>
 #include <filesystem>
 #include <atomic>
+#include <fstream>
 #include "TextureHash.h"
+#include "TextureHashLegacy.h"
 
 namespace TextureToolkit
 {
@@ -163,8 +165,29 @@ namespace TextureToolkit
         TextureManager() = default;
 
         std::filesystem::path m_game_dir;
+        std::filesystem::path m_resource_root;
         std::filesystem::path m_dump_dir;
         std::filesystem::path m_inject_dir;
+
+        // HashAlgorithm from the ini (see Config.h). Set once in init() and not changed live: it
+        // decides which algorithm every upload is identified, tagged, dumped and matched by, so
+        // switching it mid-session would leave already-tagged resources carrying the other one's
+        // value. m_use_legacy_hash covers both HashAlgorithm 1 and 2; m_migrate_hashes is 2 alone.
+        bool m_use_legacy_hash = false;
+        bool m_migrate_hashes = false;
+
+        // Formats a hash the way the ACTIVE algorithm names files: 8 hex digits (v1.0) when
+        // m_use_legacy_hash, otherwise the current 16-hex format. Used for every dump/inject
+        // filename and every hash shown in the panel or the log, so they always match what
+        // rescan_injected() is actually looking for on disk.
+        std::string format_active_hash_hex(uint64_t hash) const;
+
+        // Migration bookkeeping for HashAlgorithm=2. Appends one line to hash_migrate.txt the
+        // first time a hash with a real v1.0 replacement file is matched, pairing it with what
+        // the same pixels hash to under the current algorithm. Caller MUST hold m_mutex.
+        void note_hash_migration(uint64_t legacy_hash, uint64_t new_hash);
+        std::ofstream m_hash_migrate_file;
+        std::unordered_set<uint64_t> m_hash_migrate_written;
 
         mutable std::mutex m_mutex;
         uint64_t m_frame_count = 0;

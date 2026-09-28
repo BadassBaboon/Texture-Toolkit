@@ -13,6 +13,16 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
 ## [Unreleased]
 
 ### Added
+- **`HashAlgorithm` ini setting, to run against a mod built for Texture Toolkit v1.0.** `1` switches
+  tracking, dumping and injection to v1.0's 32-bit hash and 8-hex-digit naming, so a folder of
+  replacements named that way loads without being renamed. `2` does the same and also writes
+  `hash_migrate.txt` with an `<oldhash> <newhash>` line for every texture that has a v1.0
+  replacement file, so that folder can be renamed to the current naming and the setting turned back
+  off. The v1.0 algorithm itself is unchanged and lives in `TextureHashLegacy.h`/`.cpp`; see the note
+  there on why its Direct3D 11 hash depends on the driver's row pitch, and could differ from the
+  original file's name when reproduced under a different Direct3D 11 implementation (for instance a
+  Vulkan-based compatibility layer in place of a native Windows driver) than the one it was dumped
+  under.
 - **"Log this frame" in the panel.** Writes every texture the game draws with in the next frame to
   the log, each with its hash, size, format, usage and pool. The ordinary per-texture logging is
   capped at a handful of textures per session, which suits a log read afterwards and cannot answer

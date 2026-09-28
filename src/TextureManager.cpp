@@ -486,6 +486,7 @@ namespace TextureToolkit
         // taken relative to the game directory; an absolute root is used as-is (operator/
         // returns the right-hand path when it is absolute).
         std::filesystem::path root = m_game_dir / cfg.resource_root;
+        m_resource_root = root;
         m_dump_dir = root / "dump";
         m_inject_dir = root / "inject";
 
@@ -495,6 +496,9 @@ namespace TextureToolkit
         show_current_frame_only = cfg.show_current_frame_only;
         accept_sk_names = cfg.accept_sk_names;
 
+        m_use_legacy_hash = (cfg.hash_algorithm == 1 || cfg.hash_algorithm == 2);
+        m_migrate_hashes = (cfg.hash_algorithm == 2);
+
         std::error_code ec;
         std::filesystem::create_directories(m_dump_dir, ec);
         std::filesystem::create_directories(m_inject_dir, ec);
@@ -502,6 +506,62 @@ namespace TextureToolkit
         Logger::get().info("[TextureManager] Standalone Texture Toolkit initialized.");
         Logger::get().info("[TextureManager] Dump directory: " + m_dump_dir.string());
         Logger::get().info("[TextureManager] Inject directory: " + m_inject_dir.string());
+
+        if (m_use_legacy_hash)
+        {
+            Logger::get().warn("[TextureManager] HashAlgorithm=" + std::to_string(cfg.hash_algorithm) +
+                               ": tracking, dumping and injection use Texture Toolkit v1.0's 32-bit "
+                               "hash and 8-hex-digit naming instead of the current one. A Special "
+                               "K-named file cannot be told apart from one of ours while this is "
+                               "active, since both are 8 hex digits.");
+        }
+
+        if (m_migrate_hashes)
+        {
+            const std::filesystem::path migrate_path = m_resource_root / "hash_migrate.txt";
+
+            // Across a restart, a texture already paired up here is bound whenever it is next
+            // drawn, well before every texture in a fresh run has necessarily appeared once -- a
+            // long game with a lot of tracked art can take several sessions to see it all. Read
+            // what a previous run already found before appending, so a restart adds to that
+            // progress instead of throwing it away and starting the count back at zero.
+            size_t preexisting = 0;
+            {
+                std::ifstream existing(migrate_path);
+                std::string line;
+                while (std::getline(existing, line))
+                {
+                    std::istringstream ls(line);
+                    std::string old_hex;
+                    if (!(ls >> old_hex) || old_hex.empty())
+                        continue;
+                    try
+                    {
+                        m_hash_migrate_written.insert(static_cast<uint64_t>(std::stoul(old_hex, nullptr, 16)));
+                        ++preexisting;
+                    }
+                    catch (...)
+                    {
+                        // Ignore a line we cannot parse rather than lose the rest of the file over it.
+                    }
+                }
+            }
+
+            m_hash_migrate_file.open(migrate_path, std::ios::out | std::ios::app);
+            if (m_hash_migrate_file.is_open())
+            {
+                Logger::get().warn("[TextureManager] HashAlgorithm=2: appending to " + migrate_path.string() +
+                                   " (" + std::to_string(preexisting) + " pair(s) already recorded there) -- "
+                                   "one \"<oldhash> <newhash>\" line per texture that has a v1.0 replacement "
+                                   "file in inject/, pairing it with its current-algorithm hash so that file "
+                                   "can be renamed.");
+            }
+            else
+            {
+                Logger::get().error("[TextureManager] HashAlgorithm=2: failed to open " + migrate_path.string() +
+                                    " for writing; no migration file will be produced.");
+            }
+        }
 
         rescan_injected();
 
@@ -536,6 +596,9 @@ namespace TextureToolkit
             if (rb.srv11) rb.srv11->Release();
         }
         m_readback_queue.clear();
+
+        if (m_hash_migrate_file.is_open())
+            m_hash_migrate_file.close();
     }
 
     void TextureManager::set_preview_target(uint64_t hash)
@@ -834,10 +897,15 @@ namespace TextureToolkit
                 if (prefixed)
                     stem = stem.substr(2);
 
-                // Special K names a pack <topCRC>.dds or <topCRC>_<fullCRC>.dds, optionally
-                // prefixed "Uncompressed_" and/or suffixed "_TYPELESS". We key on the top-LOD CRC,
-                // which is the part we can reproduce, and ignore the rest of the name.
-                if (stem.size() != 16)
+                // Our own naming is 16 hex digits, unless HashAlgorithm has switched the active
+                // identity to v1.0's legacy hash, which names files with 8. Special K names a pack
+                // <topCRC>.dds or <topCRC>_<fullCRC>.dds, optionally prefixed "Uncompressed_"
+                // and/or suffixed "_TYPELESS"; we key on the top-LOD CRC, which is the part we can
+                // reproduce, and ignore the rest of the name. Note that while the legacy hash is
+                // active, its 8-hex-digit naming is indistinguishable from Special K's own (see the
+                // HashAlgorithm warning logged at startup): an 8-hex file is matched as ours first.
+                const size_t primary_hex_len = m_use_legacy_hash ? 8 : 16;
+                if (stem.size() != primary_hex_len)
                 {
                     std::string sk = stem;
                     if (sk.rfind("Uncompressed_", 0) == 0)
@@ -934,6 +1002,26 @@ namespace TextureToolkit
         }
 
         return std::filesystem::path();
+    }
+
+    std::string TextureManager::format_active_hash_hex(uint64_t hash) const
+    {
+        return m_use_legacy_hash ? format_legacy_hash_hex(static_cast<uint32_t>(hash)) : format_hash_hex(hash);
+    }
+
+    // Caller MUST hold m_mutex (called from register_unmap_texture9/11 while it is held).
+    void TextureManager::note_hash_migration(uint64_t legacy_hash, uint64_t new_hash)
+    {
+        if (new_hash == 0 || !m_hash_migrate_file.is_open())
+            return;
+
+        // One line per legacy hash, no matter how many times its texture re-uploads this session.
+        if (!m_hash_migrate_written.insert(legacy_hash).second)
+            return;
+
+        m_hash_migrate_file << format_legacy_hash_hex(static_cast<uint32_t>(legacy_hash)) << ' '
+                            << format_hash_hex(new_hash) << '\n';
+        m_hash_migrate_file.flush(); // this file is the point of the run; do not lose it to a crash
     }
 
     uint64_t TextureManager::get_tagged_hash9(IDirect3DBaseTexture9 *texture) const
@@ -1222,7 +1310,21 @@ namespace TextureToolkit
         if (have_stats && stats.streaming != 0)
             return;
 
-        uint64_t hash = calculate_d3d9_pixel_hash(pixel_data, width, height, format, pitch);
+        // HashAlgorithm (see Config.h): normally the current 64-bit hash. When the active identity
+        // has been switched to v1.0's legacy hash, only compute the current one as well when
+        // migrate mode also wants it, to log an old-hash -> new-hash pair.
+        uint64_t new_hash_for_migration = 0;
+        uint64_t hash;
+        if (m_use_legacy_hash)
+        {
+            hash = compute_legacy_hash_d3d9(pixel_data, width, height, format, pitch);
+            if (m_migrate_hashes)
+                new_hash_for_migration = calculate_d3d9_pixel_hash(pixel_data, width, height, format, pitch);
+        }
+        else
+        {
+            hash = calculate_d3d9_pixel_hash(pixel_data, width, height, format, pitch);
+        }
         if (hash == 0)
             return;
 
@@ -1250,7 +1352,7 @@ namespace TextureToolkit
 
         TextureDetails details;
         details.hash = hash;
-        details.hash_hex = format_hash_hex(hash);
+        details.hash_hex = format_active_hash_hex(hash);
         details.sk_hash = sk_hash;
         details.width = width;
         details.height = height;
@@ -1273,6 +1375,8 @@ namespace TextureToolkit
         bool via_sk_name = false;
         std::filesystem::path inject_path = find_injection_path(hash, sk_hash, &via_sk_name);
         details.injected_via_sk_name = via_sk_name;
+        if (m_migrate_hashes && !inject_path.empty())
+            note_hash_migration(hash, new_hash_for_migration);
         if (enable_injection && !inject_path.empty() &&
             m_d3d9_replacements.find(hash) == m_d3d9_replacements.end())
         {
@@ -1331,7 +1435,7 @@ namespace TextureToolkit
 
                     if (mips.empty())
                     {
-                        Logger::get().error("[TextureManager] Injected DDS 0x" + format_hash_hex(hash) + " produced no usable mip levels.");
+                        Logger::get().error("[TextureManager] Injected DDS 0x" + format_active_hash_hex(hash) + " produced no usable mip levels.");
                     }
                     else
                     {
@@ -1339,7 +1443,7 @@ namespace TextureToolkit
                         // author actually authored is a choice, and is applied without comment.
                         if (original_levels > 1 && mips.size() == 1)
                         {
-                            Logger::get().warn("[TextureManager] Injected DDS 0x" + format_hash_hex(hash) + " has a single mip level, replacing a texture that had " + std::to_string(original_levels) + ". Mips cannot be generated from block-compressed data, so it samples level 0 at every distance and will shimmer in motion. Re-export with mipmaps if that was not intended.");
+                            Logger::get().warn("[TextureManager] Injected DDS 0x" + format_active_hash_hex(hash) + " has a single mip level, replacing a texture that had " + std::to_string(original_levels) + ". Mips cannot be generated from block-compressed data, so it samples level 0 at every distance and will shimmer in motion. Re-export with mipmaps if that was not intended.");
                         }
 
                         IDirect3DTexture9 *highres_tex = nullptr;
@@ -1408,17 +1512,17 @@ namespace TextureToolkit
                                 details.repl_height = dds.height;
                                 created = true;
 
-                                Logger::get().info("[TextureManager] Loaded high-res DX9 replacement for 0x" + format_hash_hex(hash) + " (" + std::to_string(dds.width) + "x" + std::to_string(dds.height) + ", " + std::to_string(mips.size()) + " mips, original had " + std::to_string(original_levels) + ")");
+                                Logger::get().info("[TextureManager] Loaded high-res DX9 replacement for 0x" + format_active_hash_hex(hash) + " (" + std::to_string(dds.width) + "x" + std::to_string(dds.height) + ", " + std::to_string(mips.size()) + " mips, original had " + std::to_string(original_levels) + ")");
                             }
                             else
                             {
                                 highres_tex->Release();
-                                Logger::get().error("[TextureManager] Failed to upload mip data for DX9 replacement 0x" + format_hash_hex(hash));
+                                Logger::get().error("[TextureManager] Failed to upload mip data for DX9 replacement 0x" + format_active_hash_hex(hash));
                             }
                         }
                         else
                         {
-                            Logger::get().error("[TextureManager] Failed to create high-res replacement D3D9 texture for 0x" + format_hash_hex(hash));
+                            Logger::get().error("[TextureManager] Failed to create high-res replacement D3D9 texture for 0x" + format_active_hash_hex(hash));
                         }
                     }
                 }
@@ -1537,7 +1641,7 @@ namespace TextureToolkit
             if (!s_warned)
             {
                 s_warned = true;
-                Logger::get().warn("[TextureManager] Texture 0x" + format_hash_hex(hash) +
+                Logger::get().warn("[TextureManager] Texture 0x" + format_active_hash_hex(hash) +
                                    " is sampled through a non-2D view (dimension " +
                                    std::to_string(static_cast<int>(vd.ViewDimension)) +
                                    "); such textures are listed but not replaced.");
@@ -1612,7 +1716,21 @@ namespace TextureToolkit
         if (have_stats && stats.streaming != 0)
             return;
 
-        uint64_t hash = compute_hash64_rows(static_cast<const uint8_t *>(pixel_data), pitch, tight_row, rows);
+        // HashAlgorithm (see Config.h). The legacy D3D11 hash deliberately uses the RAW pixel_data
+        // pointer and driver pitch, never tight_row/rows: see TextureHashLegacy.h for why that
+        // pitch dependency is the value old files are named after, not a bug being repeated.
+        uint64_t new_hash_for_migration = 0;
+        uint64_t hash;
+        if (m_use_legacy_hash)
+        {
+            hash = compute_legacy_hash_d3d11(pixel_data, width, height, format, pitch);
+            if (m_migrate_hashes)
+                new_hash_for_migration = compute_hash64_rows(static_cast<const uint8_t *>(pixel_data), pitch, tight_row, rows);
+        }
+        else
+        {
+            hash = compute_hash64_rows(static_cast<const uint8_t *>(pixel_data), pitch, tight_row, rows);
+        }
         if (hash == 0)
             return;
 
@@ -1645,7 +1763,7 @@ namespace TextureToolkit
 
         TextureDetails details;
         details.hash = hash;
-        details.hash_hex = format_hash_hex(hash);
+        details.hash_hex = format_active_hash_hex(hash);
         details.sk_hash = sk_hash;
         details.width = width;
         details.height = height;
@@ -1668,6 +1786,8 @@ namespace TextureToolkit
         bool via_sk_name = false;
         std::filesystem::path inject_path = find_injection_path(hash, sk_hash, &via_sk_name);
         details.injected_via_sk_name = via_sk_name;
+        if (m_migrate_hashes && !inject_path.empty())
+            note_hash_migration(hash, new_hash_for_migration);
         if (enable_injection && !inject_path.empty() &&
             m_d3d11_replacements.find(hash) == m_d3d11_replacements.end())
         {
@@ -1730,7 +1850,7 @@ namespace TextureToolkit
 
                 if (mips.empty())
                 {
-                    Logger::get().error("[TextureManager] Injected DDS 0x" + format_hash_hex(hash) + " produced no usable mip levels.");
+                    Logger::get().error("[TextureManager] Injected DDS 0x" + format_active_hash_hex(hash) + " produced no usable mip levels.");
                 }
                 else
                 {
@@ -1743,7 +1863,7 @@ namespace TextureToolkit
                     // author actually authored is a choice, and is applied without comment.
                     if (orig_effective_levels > 1 && mips.size() == 1)
                     {
-                        Logger::get().warn("[TextureManager] Injected DDS 0x" + format_hash_hex(hash) + " has a single mip level, replacing a texture that had " + std::to_string(orig_effective_levels) + ". Mips cannot be generated from block-compressed data, so it samples level 0 at every distance and will shimmer in motion. Re-export with mipmaps if that was not intended.");
+                        Logger::get().warn("[TextureManager] Injected DDS 0x" + format_active_hash_hex(hash) + " has a single mip level, replacing a texture that had " + std::to_string(orig_effective_levels) + ". Mips cannot be generated from block-compressed data, so it samples level 0 at every distance and will shimmer in motion. Re-export with mipmaps if that was not intended.");
                     }
 
                     // Use a concrete (non-TYPELESS) format so the SRV is valid.
@@ -1798,12 +1918,12 @@ namespace TextureToolkit
                             details.repl_height = dds.height;
                             created = true;
 
-                            Logger::get().info("[TextureManager] Loaded DX11 replacement for 0x" + format_hash_hex(hash) + " (" + std::to_string(dds.width) + "x" + std::to_string(dds.height) + ", " + std::to_string(mips.size()) + " mips, original had " + std::to_string(original_levels) + ")");
+                            Logger::get().info("[TextureManager] Loaded DX11 replacement for 0x" + format_active_hash_hex(hash) + " (" + std::to_string(dds.width) + "x" + std::to_string(dds.height) + ", " + std::to_string(mips.size()) + " mips, original had " + std::to_string(original_levels) + ")");
                         }
                     }
                     else
                     {
-                        Logger::get().error("[TextureManager] Failed to create DX11 replacement texture for 0x" + format_hash_hex(hash) + ", HRESULT: " + std::to_string(hr));
+                        Logger::get().error("[TextureManager] Failed to create DX11 replacement texture for 0x" + format_active_hash_hex(hash) + ", HRESULT: " + std::to_string(hr));
                     }
                 }
             }
@@ -1897,7 +2017,7 @@ namespace TextureToolkit
 
         std::error_code ec;
         std::filesystem::create_directories(m_dump_dir, ec);
-        const std::filesystem::path dds_path = m_dump_dir / (format_hash_hex(hash) + ".dds");
+        const std::filesystem::path dds_path = m_dump_dir / (format_active_hash_hex(hash) + ".dds");
 
         // levels is slice-major: mip_levels entries per array slice, so the mip index restarts
         // at the top of every slice.
@@ -1965,7 +2085,7 @@ namespace TextureToolkit
             }
             else
             {
-                Logger::get().error("[TextureManager] Failed to dump texture 0x" + format_hash_hex(req.hash));
+                Logger::get().error("[TextureManager] Failed to dump texture 0x" + format_active_hash_hex(req.hash));
             }
         }
     }
@@ -2163,7 +2283,7 @@ namespace TextureToolkit
         std::string path;
         if (hash != m_preview_target_hash)
         {
-            Logger::get().warn("[TextureManager] Cannot dump 0x" + format_hash_hex(hash) + ": select the texture first.");
+            Logger::get().warn("[TextureManager] Cannot dump 0x" + format_active_hash_hex(hash) + ": select the texture first.");
             return false;
         }
 
@@ -2189,14 +2309,14 @@ namespace TextureToolkit
         {
             d.status = TextureStatus::DUMPED;
             d.filepath_dumped = path;
-            Logger::get().info("[TextureManager] Dumped 0x" + format_hash_hex(hash) + " to " + path);
+            Logger::get().info("[TextureManager] Dumped 0x" + format_active_hash_hex(hash) + " to " + path);
             return true;
         }
 
         if (!attempted)
-            Logger::get().warn("[TextureManager] Cannot dump 0x" + format_hash_hex(hash) + ": it is not currently on screen. Select it while it is being drawn, then Dump.");
+            Logger::get().warn("[TextureManager] Cannot dump 0x" + format_active_hash_hex(hash) + ": it is not currently on screen. Select it while it is being drawn, then Dump.");
         else
-            Logger::get().warn("[TextureManager] Cannot dump 0x" + format_hash_hex(hash) + ": this texture cannot be read back on demand (D3D9 default-pool). Turn on Auto-dump to capture it from the upload at load time.");
+            Logger::get().warn("[TextureManager] Cannot dump 0x" + format_active_hash_hex(hash) + ": this texture cannot be read back on demand (D3D9 default-pool). Turn on Auto-dump to capture it from the upload at load time.");
         return false;
     }
 

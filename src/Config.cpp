@@ -90,6 +90,15 @@ namespace TextureToolkit
         m_config.show_current_frame_only = GetPrivateProfileIntW(L"TextureToolkit", L"ShowCurrentFrameOnly", 1, ini_w) != 0;
         m_config.accept_sk_names = GetPrivateProfileIntW(L"TextureToolkit", L"AcceptSpecialKNames", 1, ini_w) != 0;
 
+        // Hash algorithm: 0 (current), 1 (v1.0 legacy), 2 (legacy + migration file). See Config.h.
+        m_config.hash_algorithm = GetPrivateProfileIntW(L"TextureToolkit", L"HashAlgorithm", 0, ini_w);
+        if (m_config.hash_algorithm < 0 || m_config.hash_algorithm > 2)
+        {
+            Logger::get().warn("[ConfigManager] HashAlgorithm=" + std::to_string(m_config.hash_algorithm) +
+                               " is not 0, 1, or 2; falling back to 0 (current algorithm).");
+            m_config.hash_algorithm = 0;
+        }
+
         // OSD
         m_config.show_osd_banner = GetPrivateProfileIntW(L"TextureToolkit", L"ShowOSDBanner", 1, ini_w) != 0;
 
@@ -108,6 +117,7 @@ namespace TextureToolkit
                            " FilterSmallTextures=" + (m_config.filter_small_textures ? "1" : "0") +
                            " ShowCurrentFrameOnly=" + (m_config.show_current_frame_only ? "1" : "0") +
                            " AcceptSpecialKNames=" + (m_config.accept_sk_names ? "1" : "0") +
+                           " HashAlgorithm=" + std::to_string(m_config.hash_algorithm) +
                            " ShowOSDBanner=" + (m_config.show_osd_banner ? "1" : "0") +
                            " Verbose=" + (m_config.verbose ? "1" : "0"));
     }
@@ -137,6 +147,13 @@ namespace TextureToolkit
              << "ShowCurrentFrameOnly=" << (m_config.show_current_frame_only ? 1 : 0) << "\n\n"
              << "; Also load texture packs named the way Special K names them (CRC-32C of the top mip)\n"
              << "AcceptSpecialKNames=" << (m_config.accept_sk_names ? 1 : 0) << "\n\n"
+             << "; Which content hash identifies textures. 0 = current 64-bit hash (default).\n"
+             << "; 1 = Texture Toolkit v1.0's 32-bit hash and 8-hex-digit naming, so a mod folder\n"
+             << "; still named that way loads without renaming. 2 = same as 1, and also writes\n"
+             << "; hash_migrate.txt in this folder with \"<oldhash> <newhash>\" lines for every\n"
+             << "; texture that has a v1.0 replacement file, so that folder can be renamed to the\n"
+             << "; current naming.\n"
+             << "HashAlgorithm=" << m_config.hash_algorithm << "\n\n"
              << "; On-Screen Display (OSD)\n"
              << "ShowOSDBanner=" << (m_config.show_osd_banner ? 1 : 0) << "\n\n"
              << "; Diagnostics: 1 = verbose per-texture debug logging (slow)\n"
@@ -152,6 +169,7 @@ namespace TextureToolkit
                            " FilterSmallTextures=" + (m_config.filter_small_textures ? "1" : "0") +
                            " ShowCurrentFrameOnly=" + (m_config.show_current_frame_only ? "1" : "0") +
                            " AcceptSpecialKNames=" + (m_config.accept_sk_names ? "1" : "0") +
+                           " HashAlgorithm=" + std::to_string(m_config.hash_algorithm) +
                            " Verbose=" + (m_config.verbose ? "1" : "0"));
     }
 }

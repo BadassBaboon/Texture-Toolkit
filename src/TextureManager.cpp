@@ -984,7 +984,17 @@ namespace TextureToolkit
         // same folder), then merged into `found`/`found_sk` with emplace, which is a no-op for a
         // hash a higher-priority directory already supplied -- so the first (highest-priority)
         // match for a hash always wins, and a later directory can never override it.
-        for (const std::filesystem::path &dir : m_additional_search_dirs)
+        // The base inject directory goes through the exact same "scan into a local map, then
+        // merge without overwrite" path as every additional search path (below), scanned last so
+        // it is lowest priority. Scanning it directly into `found` would be wrong: scan_inject_dir's
+        // own tie-break (a plain, unprefixed file wins over a "0x"-prefixed one) is meant to settle
+        // an ambiguity between two files in the SAME folder, and would otherwise fire against
+        // whatever an additional search path already contributed, letting an ordinary unprefixed
+        // file in inject/ clobber a higher-priority match every time.
+        std::vector<std::filesystem::path> search_dirs = m_additional_search_dirs;
+        search_dirs.push_back(m_inject_dir);
+
+        for (const std::filesystem::path &dir : search_dirs)
         {
             std::unordered_map<uint64_t, std::filesystem::path> dir_found;
             std::unordered_map<uint32_t, std::filesystem::path> dir_found_sk;
@@ -994,7 +1004,6 @@ namespace TextureToolkit
             for (auto &kv : dir_found_sk)
                 found_sk.emplace(kv.first, std::move(kv.second));
         }
-        scan_inject_dir(m_inject_dir, m_use_legacy_hash, found, found_sk);
 
         {
             std::lock_guard<std::mutex> lock(m_mutex);

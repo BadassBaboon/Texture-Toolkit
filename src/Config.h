@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 #include <filesystem>
 #include <windows.h>
 
@@ -26,6 +27,16 @@ namespace TextureToolkit
 
         // Also accept texture packs named the way Special K names them (CRC-32C of the top mip).
         bool accept_sk_names = true;
+
+        // Optional overlay folders, checked for a hash's .dds BEFORE the inject folder itself, in
+        // this order, so an earlier one wins over both a later one and the base inject folder.
+        // Each entry is relative to <ResourceRoot>/inject (or absolute), and does not need to
+        // exist -- a folder that is not currently present is simply skipped, which is what makes
+        // this useful for a conditional variant such as a controller-specific or dark-mode set:
+        // only the hashes that folder actually ships override the base set, and it can be added,
+        // removed or swapped for another without touching the base inject folder at all. Parsed
+        // from the ini's semicolon-separated AdditionalSearchPath, e.g. "dualshock;darkmode".
+        std::vector<std::filesystem::path> additional_search_paths;
 
         // Which content-hash algorithm identifies textures:
         //   0 = current 64-bit hash (default; no change from ordinary v1.1+ behaviour).

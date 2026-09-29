@@ -169,6 +169,12 @@ namespace TextureToolkit
         std::filesystem::path m_dump_dir;
         std::filesystem::path m_inject_dir;
 
+        // AdditionalSearchPath from the ini, resolved against m_inject_dir (or kept absolute), in
+        // the configured order. rescan_injected() searches these before m_inject_dir itself and a
+        // hash found in an earlier one is never overridden by a later one, so listing "dualshock"
+        // before "darkmode" makes dualshock win where both happen to replace the same texture.
+        std::vector<std::filesystem::path> m_additional_search_dirs;
+
         // HashAlgorithm from the ini (see Config.h). Set once in init() and not changed live: it
         // decides which algorithm every upload is identified, tagged, dumped and matched by, so
         // switching it mid-session would leave already-tagged resources carrying the other one's

@@ -10,6 +10,43 @@
 // declared here rather than by reaching into the backend's source.
 ImGuiKey ImGui_ImplWin32_KeyEventToImGuiKey(WPARAM wParam, LPARAM lParam);
 
+namespace
+{
+    // Splits "dualshock; darkmode ;;other" into {"dualshock", "darkmode", "other"}: trims each
+    // piece and drops anything that comes out empty, so a stray leading/trailing/doubled ';' in a
+    // hand-edited ini cannot produce a blank search path. Works on the wide string GetPrivateProfileStringW
+    // hands back, rather than transcoding it to narrow first, so a non-ASCII folder name survives.
+    std::vector<std::filesystem::path> split_search_paths(const std::wstring &value)
+    {
+        std::vector<std::filesystem::path> result;
+        std::wstringstream ss(value);
+        std::wstring piece;
+        while (std::getline(ss, piece, L';'))
+        {
+            const size_t begin = piece.find_first_not_of(L" \t\r\n");
+            if (begin == std::wstring::npos)
+                continue;
+            const size_t end = piece.find_last_not_of(L" \t\r\n");
+            result.push_back(piece.substr(begin, end - begin + 1));
+        }
+        return result;
+    }
+
+    // For the ini template and the log; ini writing is narrow throughout (see ResourceRoot below),
+    // so this is no more lossy for a non-ASCII folder name than that already is.
+    std::string join_search_paths(const std::vector<std::filesystem::path> &paths)
+    {
+        std::string result;
+        for (size_t i = 0; i < paths.size(); ++i)
+        {
+            if (i != 0)
+                result += ';';
+            result += paths[i].string();
+        }
+        return result;
+    }
+}
+
 namespace TextureToolkit
 {
     std::string hotkey_name(uint32_t vk)
@@ -90,6 +127,13 @@ namespace TextureToolkit
         m_config.show_current_frame_only = GetPrivateProfileIntW(L"TextureToolkit", L"ShowCurrentFrameOnly", 1, ini_w) != 0;
         m_config.accept_sk_names = GetPrivateProfileIntW(L"TextureToolkit", L"AcceptSpecialKNames", 1, ini_w) != 0;
 
+        // Optional overlay folders, checked before inject/ itself, in the order listed. See Config.h.
+        {
+            wchar_t search_path_str[4096] = L"";
+            GetPrivateProfileStringW(L"TextureToolkit", L"AdditionalSearchPath", L"", search_path_str, 4096, ini_w);
+            m_config.additional_search_paths = split_search_paths(search_path_str);
+        }
+
         // Hash algorithm: 0 (current), 1 (v1.0 legacy), 2 (legacy + migration file). See Config.h.
         m_config.hash_algorithm = GetPrivateProfileIntW(L"TextureToolkit", L"HashAlgorithm", 0, ini_w);
         if (m_config.hash_algorithm < 0 || m_config.hash_algorithm > 2)
@@ -117,6 +161,7 @@ namespace TextureToolkit
                            " FilterSmallTextures=" + (m_config.filter_small_textures ? "1" : "0") +
                            " ShowCurrentFrameOnly=" + (m_config.show_current_frame_only ? "1" : "0") +
                            " AcceptSpecialKNames=" + (m_config.accept_sk_names ? "1" : "0") +
+                           " AdditionalSearchPath=" + join_search_paths(m_config.additional_search_paths) +
                            " HashAlgorithm=" + std::to_string(m_config.hash_algorithm) +
                            " ShowOSDBanner=" + (m_config.show_osd_banner ? "1" : "0") +
                            " Verbose=" + (m_config.verbose ? "1" : "0"));
@@ -147,12 +192,15 @@ namespace TextureToolkit
              << "ShowCurrentFrameOnly=" << (m_config.show_current_frame_only ? 1 : 0) << "\n\n"
              << "; Also load texture packs named the way Special K names them (CRC-32C of the top mip)\n"
              << "AcceptSpecialKNames=" << (m_config.accept_sk_names ? 1 : 0) << "\n\n"
-             << "; Which content hash identifies textures. 0 = current 64-bit hash (default).\n"
-             << "; 1 = Texture Toolkit v1.0's 32-bit hash and 8-hex-digit naming, so a mod folder\n"
-             << "; still named that way loads without renaming. 2 = same as 1, and also writes\n"
-             << "; hash_migrate.txt in this folder with \"<oldhash> <newhash>\" lines for every\n"
-             << "; texture that has a v1.0 replacement file, so that folder can be renamed to the\n"
-             << "; current naming.\n"
+             << "; Optional overlay folders\n"
+             << "; A semi-colon separate list of folders (relative to `inject/` or absolute) that are\n"
+             << "; also checked (in order) for textures.  If a texture is not found in any overlay folder\n"
+             << "; then it falls back to the normal `inject/` folder.\n"
+             << "AdditionalSearchPath=" << join_search_paths(m_config.additional_search_paths) << "\n\n"
+             << "; Which hash algorithm to use\n"
+             << "; 0 = 64-bit (v1.1)\n"
+             << "; 1 = 32-bit (v1.0)\n"
+             << "; 2 = 32-bit + write hash_migrate.txt to <ResourceRoot>\n"
              << "HashAlgorithm=" << m_config.hash_algorithm << "\n\n"
              << "; On-Screen Display (OSD)\n"
              << "ShowOSDBanner=" << (m_config.show_osd_banner ? 1 : 0) << "\n\n"
@@ -169,6 +217,7 @@ namespace TextureToolkit
                            " FilterSmallTextures=" + (m_config.filter_small_textures ? "1" : "0") +
                            " ShowCurrentFrameOnly=" + (m_config.show_current_frame_only ? "1" : "0") +
                            " AcceptSpecialKNames=" + (m_config.accept_sk_names ? "1" : "0") +
+                           " AdditionalSearchPath=" + join_search_paths(m_config.additional_search_paths) +
                            " HashAlgorithm=" + std::to_string(m_config.hash_algorithm) +
                            " Verbose=" + (m_config.verbose ? "1" : "0"));
     }

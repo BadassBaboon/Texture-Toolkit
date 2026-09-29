@@ -490,6 +490,14 @@ namespace TextureToolkit
         m_dump_dir = root / "dump";
         m_inject_dir = root / "inject";
 
+        // Each entry is relative to inject/ (or absolute -- see the comment on resource_root
+        // above; operator/ behaves the same way here). Not created: a folder that is not there is
+        // meant to be skipped, not scaffolded, so a theme can be added or removed just by dropping
+        // its folder in or taking it out.
+        m_additional_search_dirs.clear();
+        for (const std::filesystem::path &p : cfg.additional_search_paths)
+            m_additional_search_dirs.push_back(m_inject_dir / p);
+
         auto_dump = cfg.auto_dump;
         enable_injection = cfg.enable_injection;
         filter_small_textures = cfg.filter_small_textures;
@@ -506,6 +514,19 @@ namespace TextureToolkit
         Logger::get().info("[TextureManager] Standalone Texture Toolkit initialized.");
         Logger::get().info("[TextureManager] Dump directory: " + m_dump_dir.string());
         Logger::get().info("[TextureManager] Inject directory: " + m_inject_dir.string());
+
+        if (!m_additional_search_dirs.empty())
+        {
+            std::string list;
+            for (size_t i = 0; i < m_additional_search_dirs.size(); ++i)
+            {
+                if (i != 0)
+                    list += ", ";
+                list += m_additional_search_dirs[i].string();
+            }
+            Logger::get().info("[TextureManager] Additional search path(s), checked before Inject "
+                               "directory in this order: " + list);
+        }
 
         if (m_use_legacy_hash)
         {
@@ -870,80 +891,110 @@ namespace TextureToolkit
         }
     }
 
+    // Scans ONE directory (non-recursive) for our own naming and Special K's, writing into
+    // `found`/`found_sk`. Used for both the inject directory and each additional search path, so
+    // an ambiguity between two spellings of the same hash resolves the same way (the unprefixed
+    // spelling wins) regardless of which directory it happens to sit in -- that tie-break is about
+    // two files in one folder, not about priority BETWEEN folders, which rescan_injected handles
+    // itself by scanning higher-priority directories first and never overwriting what they found.
+    static void scan_inject_dir(const std::filesystem::path &dir, bool use_legacy_hash,
+                                std::unordered_map<uint64_t, std::filesystem::path> &found,
+                                std::unordered_map<uint32_t, std::filesystem::path> &found_sk)
+    {
+        std::error_code scan_ec;
+        if (!std::filesystem::exists(dir, scan_ec) || scan_ec)
+            return;
+
+        for (std::filesystem::directory_iterator it(dir, scan_ec), end_it; it != end_it && !scan_ec; it.increment(scan_ec))
+        {
+            const std::filesystem::directory_entry &entry = *it;
+            if (!entry.is_regular_file(scan_ec) || scan_ec)
+                continue;
+
+            std::string ext = entry.path().extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+            if (ext != ".dds") // DDS-only injection, for format safety
+                continue;
+
+            std::string stem = entry.path().stem().string();
+            const bool prefixed = (stem.rfind("0x", 0) == 0 || stem.rfind("0X", 0) == 0);
+            if (prefixed)
+                stem = stem.substr(2);
+
+            // Our own naming is 16 hex digits, unless HashAlgorithm has switched the active
+            // identity to v1.0's legacy hash, which names files with 8. Special K names a pack
+            // <topCRC>.dds or <topCRC>_<fullCRC>.dds, optionally prefixed "Uncompressed_"
+            // and/or suffixed "_TYPELESS"; we key on the top-LOD CRC, which is the part we can
+            // reproduce, and ignore the rest of the name. Note that while the legacy hash is
+            // active, its 8-hex-digit naming is indistinguishable from Special K's own (see the
+            // HashAlgorithm warning logged at startup): an 8-hex file is matched as ours first.
+            const size_t primary_hex_len = use_legacy_hash ? 8 : 16;
+            if (stem.size() != primary_hex_len)
+            {
+                std::string sk = stem;
+                if (sk.rfind("Uncompressed_", 0) == 0)
+                    sk = sk.substr(13);
+                const size_t underscore = sk.find('_');
+                if (underscore != std::string::npos)
+                    sk = sk.substr(0, underscore);
+
+                if (sk.size() == 8 && sk.find_first_not_of("0123456789abcdefABCDEF") == std::string::npos)
+                {
+                    try
+                    {
+                        found_sk.emplace(static_cast<uint32_t>(std::stoul(sk, nullptr, 16)), entry.path());
+                    }
+                    catch (...)
+                    {
+                    }
+                    continue;
+                }
+            }
+
+            try
+            {
+                const uint64_t hash = std::stoull(stem, nullptr, 16);
+                // Two files naming one hash must resolve the same way every run, not by
+                // directory order: the unprefixed spelling wins.
+                auto existing = found.find(hash);
+                if (existing == found.end())
+                    found.emplace(hash, entry.path());
+                else if (!prefixed)
+                    existing->second = entry.path();
+            }
+            catch (...)
+            {
+                // Ignore non-hex filenames
+            }
+        }
+    }
+
     void TextureManager::rescan_injected()
     {
-        // Walk the directory WITHOUT the manager lock. The bind hooks take that lock on the render
-        // thread, so scanning a slow disk (or a resource root on a network share) while holding it
-        // stalls texture tracking for as long as the scan takes. Build the new map first, then swap.
+        // Walk the directories WITHOUT the manager lock. The bind hooks take that lock on the
+        // render thread, so scanning a slow disk (or a resource root on a network share) while
+        // holding it stalls texture tracking for as long as the scan takes. Build the new maps
+        // first, then swap.
         std::unordered_map<uint64_t, std::filesystem::path> found;
         std::unordered_map<uint32_t, std::filesystem::path> found_sk;
 
-        std::error_code scan_ec;
-        if (std::filesystem::exists(m_inject_dir, scan_ec) && !scan_ec)
+        // Additional search paths take priority, in the order configured, then the inject
+        // directory itself last. Each directory is scanned into its own local maps (so the
+        // unprefixed-wins tie-break above only ever compares two files that are actually in the
+        // same folder), then merged into `found`/`found_sk` with emplace, which is a no-op for a
+        // hash a higher-priority directory already supplied -- so the first (highest-priority)
+        // match for a hash always wins, and a later directory can never override it.
+        for (const std::filesystem::path &dir : m_additional_search_dirs)
         {
-            for (std::filesystem::directory_iterator it(m_inject_dir, scan_ec), end_it; it != end_it && !scan_ec; it.increment(scan_ec))
-            {
-                const std::filesystem::directory_entry &entry = *it;
-                if (!entry.is_regular_file(scan_ec) || scan_ec)
-                    continue;
-
-                std::string ext = entry.path().extension().string();
-                std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-                if (ext != ".dds") // DDS-only injection, for format safety
-                    continue;
-
-                std::string stem = entry.path().stem().string();
-                const bool prefixed = (stem.rfind("0x", 0) == 0 || stem.rfind("0X", 0) == 0);
-                if (prefixed)
-                    stem = stem.substr(2);
-
-                // Our own naming is 16 hex digits, unless HashAlgorithm has switched the active
-                // identity to v1.0's legacy hash, which names files with 8. Special K names a pack
-                // <topCRC>.dds or <topCRC>_<fullCRC>.dds, optionally prefixed "Uncompressed_"
-                // and/or suffixed "_TYPELESS"; we key on the top-LOD CRC, which is the part we can
-                // reproduce, and ignore the rest of the name. Note that while the legacy hash is
-                // active, its 8-hex-digit naming is indistinguishable from Special K's own (see the
-                // HashAlgorithm warning logged at startup): an 8-hex file is matched as ours first.
-                const size_t primary_hex_len = m_use_legacy_hash ? 8 : 16;
-                if (stem.size() != primary_hex_len)
-                {
-                    std::string sk = stem;
-                    if (sk.rfind("Uncompressed_", 0) == 0)
-                        sk = sk.substr(13);
-                    const size_t underscore = sk.find('_');
-                    if (underscore != std::string::npos)
-                        sk = sk.substr(0, underscore);
-
-                    if (sk.size() == 8 && sk.find_first_not_of("0123456789abcdefABCDEF") == std::string::npos)
-                    {
-                        try
-                        {
-                            found_sk.emplace(static_cast<uint32_t>(std::stoul(sk, nullptr, 16)), entry.path());
-                        }
-                        catch (...)
-                        {
-                        }
-                        continue;
-                    }
-                }
-
-                try
-                {
-                    const uint64_t hash = std::stoull(stem, nullptr, 16);
-                    // Two files naming one hash must resolve the same way every run, not by
-                    // directory order: the unprefixed spelling wins.
-                    auto existing = found.find(hash);
-                    if (existing == found.end())
-                        found.emplace(hash, entry.path());
-                    else if (!prefixed)
-                        existing->second = entry.path();
-                }
-                catch (...)
-                {
-                    // Ignore non-hex filenames
-                }
-            }
+            std::unordered_map<uint64_t, std::filesystem::path> dir_found;
+            std::unordered_map<uint32_t, std::filesystem::path> dir_found_sk;
+            scan_inject_dir(dir, m_use_legacy_hash, dir_found, dir_found_sk);
+            for (auto &kv : dir_found)
+                found.emplace(kv.first, std::move(kv.second));
+            for (auto &kv : dir_found_sk)
+                found_sk.emplace(kv.first, std::move(kv.second));
         }
+        scan_inject_dir(m_inject_dir, m_use_legacy_hash, found, found_sk);
 
         {
             std::lock_guard<std::mutex> lock(m_mutex);
@@ -973,7 +1024,8 @@ namespace TextureToolkit
                     pair.second.status = TextureStatus::ORIGINAL;
             }
 
-            Logger::get().info("[TextureManager] Scanned " + std::to_string(m_injected_files.size()) + " DDS replacement file(s) in TT/inject.");
+            Logger::get().info("[TextureManager] Scanned " + std::to_string(m_injected_files.size()) + " DDS replacement file(s) in TT/inject" +
+                               (m_additional_search_dirs.empty() ? "" : " and its additional search path(s)") + ".");
             if (!m_sk_injected_files.empty())
                 Logger::get().info("[TextureManager] Also found " + std::to_string(m_sk_injected_files.size()) +
                                    " Special K-named file(s); these match on the top-mip CRC-32C.");

@@ -29,6 +29,7 @@ Storing the hash on the resource, instead of tracking raw pointers, keeps a repl
 - 64-bit content hashing, so two identical textures share one hash and one replacement. The hash covers the texture's tightly-packed rows, not the driver's row padding, so a hash means the same thing on every machine and an `inject` folder can be shared as a mod.
 - Special K texture packs load unchanged: files named the way Special K names them (eight hex digits, the CRC-32C of the top mip) are recognised alongside our own, and show as "SK Injected" in the panel.
 - Input isolation and a software cursor, so the game stops reading the mouse and keyboard while the panel is open.
+- Texture overlay folders for conditional/optional texture replacement.
 
 ## The in-game panel
 
@@ -83,6 +84,7 @@ AutoDump=0
 FilterSmallTextures=1
 ShowCurrentFrameOnly=1
 AcceptSpecialKNames=1
+AdditionalSearchPath=
 HashAlgorithm=0
 ShowOSDBanner=1
 Verbose=0
@@ -95,6 +97,14 @@ Verbose=0
 - `FilterSmallTextures`: ignore textures under 16x16.
 - `ShowCurrentFrameOnly`: list only textures drawn in the current scene.
 - `AcceptSpecialKNames`: also load files named the way Special K names them. Our own naming always wins when both exist for the same texture.
+- `AdditionalSearchPath`: optional overlay folders, semicolon-separated, checked for a hash's `.dds`
+  before `inject/` itself, in the listed order -- so an earlier folder wins over both a later one
+  and `inject/`. Each entry is relative to `inject/`, or an absolute path. A folder that does not
+  currently exist is simply skipped, which is what makes this useful for a conditional variant:
+  set it to `dualshock;darkmode`, and only whichever hashes those folders actually ship override
+  the base set in `inject/`; add, remove, or swap either folder for another without touching the
+  base set at all. A hash present in more than one of these places resolves to the first (highest
+  priority) match, the same way it would if `inject/` itself had two spellings of the same hash.
 - `HashAlgorithm`: which content hash identifies a texture. `0` (default) is the current 64-bit
   hash. `1` switches tracking, dumping and injection to Texture Toolkit v1.0's 32-bit hash and its
   8-hex-digit file naming, so a mod folder still named that way keeps working unmodified. `2` is the

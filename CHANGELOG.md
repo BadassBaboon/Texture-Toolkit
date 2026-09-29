@@ -13,6 +13,13 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
 ## [Unreleased]
 
 ### Added
+- **`AdditionalSearchPath` ini setting, for optional overlay texture folders.** A semicolon-
+  separated list of folders, relative to `inject/` (or absolute), checked in the listed order
+  before `inject/` itself; a folder that is not currently present is simply skipped. Set it to
+  something like `dualshock;darkmode` to layer a conditional variant over the base set: only the
+  hashes that folder actually ships override the default, and the folder can be added, removed, or
+  swapped for another without touching `inject/`. A hash present in more than one place resolves to
+  the first (highest-priority) match.
 - **`HashAlgorithm` ini setting, to run against a mod built for Texture Toolkit v1.0.** `1` switches
   tracking, dumping and injection to v1.0's 32-bit hash and 8-hex-digit naming, so a folder of
   replacements named that way loads without being renamed. `2` does the same and also writes

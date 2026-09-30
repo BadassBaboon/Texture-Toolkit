@@ -46,6 +46,16 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
   is. Art the game uploads but never draws with, such as livery pieces composited into a render
   target, is tracked and then filtered straight back out, which reads as the tool failing to see it.
 
+### Fixed
+- **A Direct3D 11 crash reading a stale `Map()` pointer.** The bookkeeping between `Map` and
+  `Unmap` was keyed purely on the resource's raw pointer, with no reference held on it. If a
+  resource was destroyed while still recorded there (abandoned by a `Release` instead of the
+  matching `Unmap`), its address could be reused for an unrelated resource, and if THAT
+  resource's own `Map` was ever missed, its `Unmap` would match the leftover entry by address
+  alone and hand a pointer that no longer meant anything to the hasher. A reference is now held for
+  as long as an entry is outstanding, which makes that address reuse impossible, and the entry's
+  cleanup no longer depends on the injection re-entrancy guard being clear.
+
 ## [1.1.0] - 2026-08-26
 
 Games that never showed a texture now work, and two ways a game could stall are gone. Nothing here

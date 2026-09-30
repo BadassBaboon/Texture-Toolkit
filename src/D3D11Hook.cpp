@@ -41,6 +41,16 @@ namespace TextureToolkit
         return CallWindowProc(g_orig_wndproc, hWnd, msg, wParam, lParam);
     }
 
+    // `resource` holds a reference for as long as the entry exists (see Hooked_Map). Without that,
+    // this bookkeeping is a textbook use-after-free waiting to happen: it is keyed purely on a raw
+    // pointer, and if the resource were destroyed while still recorded here, its address could be
+    // handed to a brand new, unrelated D3D11 object -- and if THAT object's own Map call were ever
+    // missed for any reason (Mapped while s_inside_injection suppressed recording, or through a
+    // ID3D11DeviceContext vtable slot this build has not hooked), its eventual Unmap would match
+    // this stale entry by address alone and hand `mapped.pData`, pointing into memory that no
+    // longer has anything to do with either resource, straight to the hasher. Holding a reference
+    // makes that sequence impossible: the original resource cannot be destroyed, and so its address
+    // cannot be reused, for as long as an entry for it is still outstanding here.
     struct MappedResourceData
     {
         ID3D11Resource *resource = nullptr;
@@ -762,11 +772,23 @@ namespace TextureToolkit
                 Logger::get().debug("[D3D11Hook] Hooked_Map: resource=0x" + std::to_string(reinterpret_cast<uintptr_t>(pResource)));
             }
 
+            // A resource can be Mapped again before a PREVIOUS mapping of it was ever Unmapped
+            // through this hook -- an app that abandons a map by Releasing the resource instead of
+            // calling Unmap, for one. Drop any such leftover entry's reference before replacing it,
+            // so it is never left outstanding for longer than the resource it refers to actually is.
+            auto existing = s_mapped_resources.find(pResource);
+            if (existing != s_mapped_resources.end())
+            {
+                existing->second.resource->Release();
+                s_mapped_resources.erase(existing);
+            }
+
             MappedResourceData data;
             data.resource = pResource;
             data.subresource = Subresource;
             data.mapped = *pMappedResource;
 
+            pResource->AddRef(); // released on the matching Unmap, or when superseded above
             s_mapped_resources[pResource] = data;
         }
 
@@ -775,47 +797,57 @@ namespace TextureToolkit
 
     void STDMETHODCALLTYPE D3D11Hook::Hooked_Unmap(ID3D11DeviceContext *context, ID3D11Resource *pResource, UINT Subresource)
     {
-        if (!s_inside_injection && Subresource == 0)
+        if (Subresource == 0)
         {
             auto it = s_mapped_resources.find(pResource);
             if (it != s_mapped_resources.end())
             {
-                MappedResourceData &data = it->second;
-
-                D3D11_RESOURCE_DIMENSION dim;
-                pResource->GetType(&dim);
-
-                if (dim == D3D11_RESOURCE_DIMENSION_TEXTURE2D)
+                // s_inside_injection only ever gates whether this Unmap is PROCESSED, never
+                // whether the entry is released and erased below: our own replacement-texture
+                // Map/Unmap pairs are never recorded in the first place (see Hooked_Map), so
+                // reaching here with it set true on a recorded entry would mean this resource
+                // happened to be mapped for a real reason too, and that mapping still deserves to
+                // have its bookkeeping cleaned up.
+                if (!s_inside_injection)
                 {
-                    ID3D11Texture2D *tex = static_cast<ID3D11Texture2D *>(pResource);
-                    D3D11_TEXTURE2D_DESC desc = {};
-                    tex->GetDesc(&desc);
+                    MappedResourceData &data = it->second;
 
-                    static int s_logged_unmaps = 0;
-                    if (s_logged_unmaps < 20)
+                    D3D11_RESOURCE_DIMENSION dim;
+                    pResource->GetType(&dim);
+
+                    if (dim == D3D11_RESOURCE_DIMENSION_TEXTURE2D && data.mapped.pData != nullptr)
                     {
-                        s_logged_unmaps++;
-                        Logger::get().debug("[D3D11Hook] Hooked_Unmap: Registering texture=0x" + std::to_string(reinterpret_cast<uintptr_t>(pResource)));
-                    }
+                        ID3D11Texture2D *tex = static_cast<ID3D11Texture2D *>(pResource);
+                        D3D11_TEXTURE2D_DESC desc = {};
+                        tex->GetDesc(&desc);
 
-                    ID3D11Device *device = nullptr;
-                    context->GetDevice(&device);
+                        static int s_logged_unmaps = 0;
+                        if (s_logged_unmaps < 20)
+                        {
+                            s_logged_unmaps++;
+                            Logger::get().debug("[D3D11Hook] Hooked_Unmap: Registering texture=0x" + std::to_string(reinterpret_cast<uintptr_t>(pResource)));
+                        }
 
-                    if (device != nullptr)
-                    {
-                        TextureManager::get().register_unmap_texture11(
-                            device,
-                            pResource,
-                            data.mapped.pData,
-                            desc.Width,
-                            desc.Height,
-                            desc.Format,
-                            data.mapped.RowPitch
-                        );
-                        device->Release();
+                        ID3D11Device *device = nullptr;
+                        context->GetDevice(&device);
+
+                        if (device != nullptr)
+                        {
+                            TextureManager::get().register_unmap_texture11(
+                                device,
+                                pResource,
+                                data.mapped.pData,
+                                desc.Width,
+                                desc.Height,
+                                desc.Format,
+                                data.mapped.RowPitch
+                            );
+                            device->Release();
+                        }
                     }
                 }
 
+                it->second.resource->Release(); // drop the reference Hooked_Map took out
                 s_mapped_resources.erase(it);
             }
         }

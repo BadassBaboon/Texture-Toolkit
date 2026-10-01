@@ -622,6 +622,17 @@ namespace TextureToolkit
             m_hash_migrate_file.close();
     }
 
+    // Runs from the CRT's atexit table. On an explicit FreeLibrary, shutdown() has already joined
+    // the dump worker and this is a no-op. On process exit DllMain deliberately skips shutdown()
+    // (see Main.cpp), so m_dump_thread is still joinable here and ~thread() would call
+    // std::terminate(). The OS has already killed the worker by then, so joining would hang;
+    // detach() just closes the handle.
+    TextureManager::~TextureManager()
+    {
+        if (m_dump_thread.joinable())
+            m_dump_thread.detach();
+    }
+
     void TextureManager::set_preview_target(uint64_t hash)
     {
         std::lock_guard<std::mutex> lock(m_mutex);

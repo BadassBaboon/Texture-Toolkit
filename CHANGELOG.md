@@ -36,8 +36,8 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
   is. Art the game uploads but never draws with, such as livery pieces composited into a render
   target, is tracked and then filtered straight back out, which reads as the tool failing to see it.
 
-- **A "Join Baboon's Workshop" button** at the foot of the panel's sidebar opens the Texture
-  Toolkit Discord in the browser.
+- **A "Join Discord" button** at the foot of the panel's sidebar opens Baboon's Workshop, the
+  Texture Toolkit Discord, in the browser.
 
 ### Changed
 - **The panel is reorganised so each control sits with what it acts on.** Auto-dump, Dump all and
@@ -45,12 +45,17 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
   Textures toolbar beside "Current scene only"; Mod files is now replacements and mods only.
   "Log this frame" is on Diagnostics only, and Diagnostics gains a Verbose logging switch that
   applies at once instead of needing an ini edit and a restart.
-- Text is larger throughout (descriptions from 13 to 14 px, body from 15 to 16) so the smaller
+- Text is larger throughout (descriptions from 13 to 15 px, body from 15 to 17) so the smaller
   lines read comfortably over a game.
-- The sidebar is narrower: the logo sits above the name instead of beside it, and the width is
-  worked out from what the sidebar shows, so nothing in it is shrunk or cut off. The Discord
-  button reads "Join Discord", with "Join Baboon's Workshop" on hover, and a failed-file count on
-  Mod files is a red number.
+- The sidebar takes its width from what it shows, with the logo beside the name, so nothing in it
+  is shrunk or cut off. The Discord button reads "Join Discord", with "Join Baboon's Workshop" on
+  hover, and a failed-file count on Mod files is a red number.
+- **Build Info on Diagnostics** (was "This build") now covers what a bug report needs: the game and
+  its folder, where the `.asi` loaded from, the Windows version (and Wine/Proton), the GPU and
+  driver or VRAM, the resolution, other software hooked into the game (ReShade, Special K,
+  RivaTuner, the Steam, Discord and OBS overlays, proxy DLLs in the game folder), every panel
+  setting, the replacement and mod counts, and the session length. **Copy** puts it all on the
+  clipboard as text and writes it to the log.
 - **The Texture Toolkit logo and a palette taken from it.** The brick-and-stone logo replaces the
   drawn badge in the sidebar and on the startup banner; it is compiled into the `.asi`
   (`assets/logo.png`, regenerated into `src/LogoData.h` by `tools/embed_logo.py`), so there is still
@@ -72,6 +77,9 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
 - The inspector previews on a checkerboard, so transparent pixels read as transparent.
 
 ### Fixed
+- Switching "Accept Special K names" off left Special K replacements on screen until the next
+  Reload; it rescans at once now. Switching "Skip under 16 x 16" on left tiny textures that were
+  already tracked in the list; they are hidden at once now.
 - **An inject file refused when its texture first loaded was never counted as failed.** Only a
   file retried later by hot reload was recorded, but most files exist before the game starts and
   fail on the first try, so the panel said "0 failed" while the texture sat at Pending for good. It

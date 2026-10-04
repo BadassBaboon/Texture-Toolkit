@@ -18,11 +18,11 @@ namespace TextureToolkit::UI
 
     // Sizes, in unscaled pixels, for PushFont(font, size).
     // Descriptions are set in kSizeSmall and have to stay readable over a game at 1440p and up,
-    // which 13px Segoe UI was not; everything else is scaled with them to keep the proportions.
-    constexpr float kSizeBody = 16.0f;
-    constexpr float kSizeSmall = 14.0f;
-    constexpr float kSizeTitle = 22.0f;
-    constexpr float kSizeStat = 23.0f;
+    // which 13px Segoe UI was not (15px is); everything else is scaled with them to keep the proportions.
+    constexpr float kSizeBody = 17.0f;
+    constexpr float kSizeSmall = 15.0f;
+    constexpr float kSizeTitle = 23.0f;
+    constexpr float kSizeStat = 24.0f;
 
     struct Palette
     {

@@ -2071,6 +2071,11 @@ namespace TextureToolkit
                 pair.second.status = (m_failed_injections.find(pair.first) != m_failed_injections.end())
                     ? TextureStatus::FAILED : TextureStatus::PENDING;
 
+            // Tracking already skips them while the switch is on; this also drops the ones
+            // tracked before it was switched on.
+            if (filter_small_textures && (pair.second.width < 16 || pair.second.height < 16))
+                continue;
+
             if (show_current_frame_only)
             {
                 if (pair.second.last_seen_frame == 0 || (m_frame_count > 0 && pair.second.last_seen_frame + 60 < m_frame_count))

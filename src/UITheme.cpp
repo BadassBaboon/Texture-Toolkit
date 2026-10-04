@@ -641,7 +641,7 @@ namespace TextureToolkit::UI
 
     void KeyValue(const char *key, const char *value, bool mono, const ImVec4 *value_color)
     {
-        constexpr float kKeyWidth = 104.0f;
+        constexpr float kKeyWidth = 128.0f;
         const float x = ImGui::GetCursorPosX();
 
         ImGui::PushStyleColor(ImGuiCol_Text, kPalette.text_muted);

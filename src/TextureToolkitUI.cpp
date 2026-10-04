@@ -10,6 +10,10 @@
 #include "Version.h"
 #include <windows.h>
 #include <cmath>
+#include <iterator>
+#include <cwctype>
+#include <dxgi.h>
+#include <psapi.h>
 #include <shellapi.h>
 #include <vector>
 #include <string>
@@ -38,10 +42,15 @@ namespace TextureToolkit
     constexpr float kCloseReserve = 44.0f;
     static Page s_page = Page::Textures;
 
+    // Minutes since boot when Texture Toolkit loaded, for the session length in Build Info.
+    static const unsigned long long s_session_start_min = GetTickCount64() / 60000ULL;
+
     static const wchar_t *const kDiscordInvite = L"https://discord.gg/qRdVSkUW6n";
     static const char *const kDiscordLabel = "Join Discord";
     static const char *const kBrandTitle = "TEXTURE TOOLKIT";
     static const char *const kBrandCredit = "by BadassBaboon";
+    static constexpr float kBrandLogo = 40.0f;
+    static constexpr float kBrandGap = 12.0f;
 
     static void SetStatusMessage(const std::string &msg)
     {
@@ -594,7 +603,7 @@ namespace TextureToolkit
             ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 4.0f);
             if (ToggleSwitch("##skip_small", &tm.filter_small_textures))
                 persist_settings(tm);
-            ImGui::SetItemTooltip("Ignore textures under 16 x 16: lookup tables and placeholders,\nrarely worth replacing, that crowd the list.");
+            ImGui::SetItemTooltip("Ignore textures under 16 x 16: lookup tables and placeholders,\nrarely worth replacing, that crowd the list.\nSwitched off, tiny textures are listed as they next load.");
             ImGui::SameLine();
             ImGui::SetCursorPosY(ImGui::GetCursorPosY() - 4.0f);
             ImGui::AlignTextToFramePadding();
@@ -604,7 +613,7 @@ namespace TextureToolkit
                 tm.filter_small_textures = !tm.filter_small_textures;
                 persist_settings(tm);
             }
-            ImGui::SetItemTooltip("Ignore textures under 16 x 16: lookup tables and placeholders,\nrarely worth replacing, that crowd the list.");
+            ImGui::SetItemTooltip("Ignore textures under 16 x 16: lookup tables and placeholders,\nrarely worth replacing, that crowd the list.\nSwitched off, tiny textures are listed as they next load.");
 
             // A texture the game uploads but never draws with is tracked and then filtered
             // straight back out, which reads as "the tool cannot see it" when the truth is that
@@ -1057,9 +1066,12 @@ namespace TextureToolkit
             if (ToggleRow("Replace textures", "Swap in a replacement wherever a matching file exists.", &tm.enable_injection))
                 persist_settings(tm);
             if (ToggleRow("Accept Special K names",
-                          "Also load packs named the way Special K names them: eight hex digits, the CRC-32C of the top mip. These show as SK Injected.",
+                          "Also load packs named the way Special K names them: eight hex digits, the CRC-32C of the top mip. These show as SK Injected. Switching it on applies to textures as they load, so restart the game for ones already loaded.",
                           &tm.accept_sk_names))
+            {
                 persist_settings(tm);
+                tm.rescan_injected(); // drop, or pick up, the SK-named files' replacements now
+            }
 
             ImGui::Dummy(ImVec2(0.0f, 4.0f));
             const float gap = ImGui::GetStyle().ItemSpacing.x;
@@ -1117,7 +1129,7 @@ namespace TextureToolkit
             KeyValue("Panel key", hotkey_name(cfg.hotkey).c_str(), false, &pal().accent);
             ImGui::PushFont(nullptr, kSizeSmall);
             ImGui::PushStyleColor(ImGuiCol_Text, pal().text_faint);
-            ImGui::TextWrapped("Change HotKey in TextureToolkit.ini to use a different key, for example 0x24 for Home or 0x74 for F5.");
+            ImGui::TextWrapped("Change HotKey in TextureToolkit.ini and restart the game to use a different key, for example 0x24 for Home or 0x74 for F5.");
             ImGui::PopStyleColor();
             ImGui::PopFont();
         }
@@ -1127,6 +1139,243 @@ namespace TextureToolkit
         KeyValue("Resource root", cfg.resource_root.string().c_str(), true);
         KeyValue("Inject", tm.get_inject_dir().string().c_str(), true);
         KeyValue("Dump", tm.get_dump_dir().string().c_str(), true);
+        EndCard();
+    }
+
+    // ---- Build info ---------------------------------------------------------------------------
+    // Everything worth knowing about a user's setup when a texture will not show, on one card that
+    // can be screenshotted, or copied as text with one click and pasted into a bug report.
+
+    static std::string narrow(const std::wstring &w)
+    {
+        if (w.empty())
+            return {};
+        const int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
+        std::string out(static_cast<size_t>((std::max)(n, 0)), '\0');
+        if (n > 0)
+            WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), out.data(), n, nullptr, nullptr);
+        return out;
+    }
+
+    static std::wstring module_path(HMODULE module)
+    {
+        std::wstring buf(1024, L'\0');
+        const DWORD n = GetModuleFileNameW(module, buf.data(), static_cast<DWORD>(buf.size()));
+        buf.resize(n);
+        return buf;
+    }
+
+    // GetVersionEx lies to an unmanifested process (every game says Windows 8); ntdll does not.
+    static std::string windows_version()
+    {
+        using RtlGetVersion_t = LONG(WINAPI *)(OSVERSIONINFOW *);
+        OSVERSIONINFOW vi = {};
+        vi.dwOSVersionInfoSize = sizeof(vi);
+        HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+        auto fn = ntdll ? reinterpret_cast<RtlGetVersion_t>(GetProcAddress(ntdll, "RtlGetVersion")) : nullptr;
+        if (fn == nullptr || fn(&vi) != 0)
+            return "unknown";
+        const char *name = (vi.dwMajorVersion == 10 && vi.dwBuildNumber >= 22000) ? "Windows 11"
+                         : (vi.dwMajorVersion == 10) ? "Windows 10"
+                         : (vi.dwMajorVersion == 6 && vi.dwMinorVersion == 3) ? "Windows 8.1"
+                         : (vi.dwMajorVersion == 6 && vi.dwMinorVersion == 2) ? "Windows 8"
+                         : (vi.dwMajorVersion == 6 && vi.dwMinorVersion == 1) ? "Windows 7" : "Windows";
+        char buf[96];
+        std::snprintf(buf, sizeof(buf), "%s (build %lu)", name, static_cast<unsigned long>(vi.dwBuildNumber));
+        // Wine reports a Windows version too; say so, since it changes what a driver bug can be.
+        if (ntdll != nullptr && GetProcAddress(ntdll, "wine_get_version") != nullptr)
+            return std::string(buf) + ", under Wine/Proton";
+        return buf;
+    }
+
+    static std::string gpu_description()
+    {
+        if (ID3D11Device *dev = D3D11Hook::get().get_device())
+        {
+            std::string out = "unknown";
+            IDXGIDevice *dxgi = nullptr;
+            if (SUCCEEDED(dev->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void **>(&dxgi))) && dxgi != nullptr)
+            {
+                IDXGIAdapter *adapter = nullptr;
+                DXGI_ADAPTER_DESC desc = {};
+                if (SUCCEEDED(dxgi->GetAdapter(&adapter)) && adapter != nullptr && SUCCEEDED(adapter->GetDesc(&desc)))
+                {
+                    char vram[48];
+                    std::snprintf(vram, sizeof(vram), ", %llu MiB VRAM",
+                                  static_cast<unsigned long long>(desc.DedicatedVideoMemory / (1024 * 1024)));
+                    out = narrow(desc.Description) + vram;
+                }
+                if (adapter != nullptr)
+                    adapter->Release();
+                dxgi->Release();
+            }
+            return out;
+        }
+        if (IDirect3DDevice9 *dev = D3D9Hook::get().get_device())
+        {
+            std::string out = "unknown";
+            IDirect3D9 *d3d = nullptr;
+            D3DDEVICE_CREATION_PARAMETERS cp = {};
+            D3DADAPTER_IDENTIFIER9 id = {};
+            if (SUCCEEDED(dev->GetDirect3D(&d3d)) && d3d != nullptr && SUCCEEDED(dev->GetCreationParameters(&cp)) &&
+                SUCCEEDED(d3d->GetAdapterIdentifier(cp.AdapterOrdinal, 0, &id)))
+            {
+                const LARGE_INTEGER v = id.DriverVersion;
+                char drv[64];
+                std::snprintf(drv, sizeof(drv), ", driver %u.%u.%u.%u", HIWORD(v.HighPart), LOWORD(v.HighPart),
+                              HIWORD(v.LowPart), LOWORD(v.LowPart));
+                out = std::string(id.Description) + drv;
+            }
+            if (d3d != nullptr)
+                d3d->Release();
+            return out;
+        }
+        return "no device yet";
+    }
+
+    // Other things hooked into the game, the usual reason a texture never reaches us: overlays,
+    // wrappers, and proxy DLLs sitting in the game's folder in place of the system's.
+    static std::string other_software(const std::wstring &game_dir)
+    {
+        HMODULE modules[1024] = {};
+        DWORD needed = 0;
+        if (!EnumProcessModules(GetCurrentProcess(), modules, sizeof(modules), &needed))
+            return "could not list modules";
+        const size_t count = (std::min)(static_cast<size_t>(needed / sizeof(HMODULE)), std::size(modules));
+
+        HMODULE self = nullptr;
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(&other_software), &self);
+
+        std::vector<std::string> found;
+        const auto add = [&found](const std::string &what)
+        {
+            if (std::find(found.begin(), found.end(), what) == found.end())
+                found.push_back(what);
+        };
+        for (size_t i = 0; i < count; ++i)
+        {
+            if (modules[i] == self)
+                continue;
+            const std::filesystem::path path(module_path(modules[i]));
+            std::wstring name = path.filename().wstring();
+            std::transform(name.begin(), name.end(), name.begin(), ::towlower);
+            const bool in_game_dir = _wcsicmp(path.parent_path().wstring().c_str(), game_dir.c_str()) == 0;
+
+            if (GetProcAddress(modules[i], "ReShadeRegisterAddon") != nullptr)
+                add("ReShade (" + narrow(path.filename().wstring()) + ")");
+            else if (name.find(L"reshade") != std::wstring::npos)
+                add("ReShade add-on");
+            else if (name == L"specialk32.dll" || name == L"specialk64.dll")
+                add("Special K");
+            else if (name.rfind(L"rtsshooks", 0) == 0)
+                add("RivaTuner Statistics Server");
+            else if (name.rfind(L"gameoverlayrenderer", 0) == 0)
+                add("Steam overlay");
+            else if (name.rfind(L"discordhook", 0) == 0)
+                add("Discord overlay");
+            else if (name.rfind(L"graphics-hook", 0) == 0)
+                add("OBS game capture");
+            else if (in_game_dir && (name == L"d3d9.dll" || name == L"d3d8.dll" || name == L"d3d11.dll" ||
+                                     name == L"dxgi.dll" || name == L"dinput8.dll" || name == L"ddraw.dll"))
+                add(narrow(path.filename().wstring()) + " in the game folder");
+        }
+        if (found.empty())
+            return "none detected";
+        std::string out;
+        for (size_t i = 0; i < found.size(); ++i)
+            out += (i ? ", " : "") + found[i];
+        return out;
+    }
+
+    struct InfoRow
+    {
+        std::string key, value;
+        bool mono = false;
+    };
+
+    static std::vector<InfoRow> collect_build_info(TextureManager &tm)
+    {
+        const Configuration &cfg = ConfigManager::get().get_config();
+        const auto on = [](bool b) { return b ? "on" : "off"; };
+
+        const std::filesystem::path exe(module_path(nullptr));
+        HMODULE self = nullptr;
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(&collect_build_info), &self);
+
+        std::vector<InfoRow> rows;
+        rows.push_back({ "Texture Toolkit", std::string("v") + TT_VERSION_STRING + (sizeof(void *) == 8 ? " x64" : " x86") +
+                                                ", built " __DATE__ " " __TIME__ });
+        rows.push_back({ "Game", narrow(exe.filename().wstring()) });
+        rows.push_back({ "Game folder", narrow(exe.parent_path().wstring()), true });
+        rows.push_back({ "Loaded from", narrow(module_path(self)), true });
+        rows.push_back({ "Windows", windows_version() });
+        rows.push_back({ "Graphics API", graphics_api_name() });
+        rows.push_back({ "GPU", gpu_description() });
+        const ImVec2 ds = ImGui::GetIO().DisplaySize;
+        char res[32];
+        std::snprintf(res, sizeof(res), "%d x %d", static_cast<int>(ds.x), static_cast<int>(ds.y));
+        rows.push_back({ "Resolution", res });
+        rows.push_back({ "Also hooked in", other_software(exe.parent_path().wstring()) });
+
+        const TextureManager::InjectionStats inj = tm.get_injection_stats();
+        size_t mods = 0, mods_on = 0;
+        for (const TextureManager::ModInfo &m : tm.get_mods())
+        {
+            if (m.is_base)
+                continue;
+            ++mods;
+            mods_on += m.enabled ? 1 : 0;
+        }
+        rows.push_back({ "Replacements", std::string("replace ") + on(tm.enable_injection) + ", Special K names " + on(tm.accept_sk_names) +
+                                             "; " + std::to_string(inj.files_found) + " found, " + std::to_string(inj.applied) +
+                                             " applied, " + std::to_string(inj.failed) + " failed" });
+        rows.push_back({ "Mods", std::to_string(mods) + " installed, " + std::to_string(mods_on) + " on" });
+        rows.push_back({ "Texture list", std::string("current scene only ") + on(tm.show_current_frame_only) +
+                                             ", skip under 16 x 16 " + on(tm.filter_small_textures) });
+        rows.push_back({ "Auto-dump", on(tm.auto_dump) });
+        rows.push_back({ "Verbose log", on(cfg.verbose) });
+        rows.push_back({ "Panel key", hotkey_name(cfg.hotkey) });
+        rows.push_back({ "Resource root", narrow(tm.get_resource_root().wstring()), true });
+
+        const unsigned long long mins = GetTickCount64() / 60000ULL - s_session_start_min;
+        char up[48];
+        std::snprintf(up, sizeof(up), "%llu min", mins);
+        rows.push_back({ "Session", up });
+        return rows;
+    }
+
+    static void DrawBuildInfoCard()
+    {
+        TextureManager &tm = TextureManager::get();
+
+        // Module and adapter queries are not free; refresh a couple of times a second at most.
+        static std::vector<InfoRow> s_rows;
+        static ULONGLONG s_next = 0;
+        const ULONGLONG now = GetTickCount64();
+        if (s_rows.empty() || now >= s_next)
+        {
+            s_rows = collect_build_info(tm);
+            s_next = now + 2000;
+        }
+
+        BeginCard("build", "Build Info",
+                  "When reporting a problem, send this along with a verbose log: Copy puts it on the clipboard as text.");
+        for (const InfoRow &r : s_rows)
+            KeyValue(r.key.c_str(), r.value.c_str(), r.mono);
+
+        ImGui::Dummy(ImVec2(0.0f, 2.0f));
+        if (UI::Button("Copy"))
+        {
+            std::string text = "Texture Toolkit build info\n";
+            for (const InfoRow &r : s_rows)
+                text += r.key + ": " + r.value + "\n";
+            ImGui::SetClipboardText(text.c_str());
+            Logger::get().info("[UI] Build info:\n" + text);
+            SetStatusMessage("Build info copied to the clipboard, and written to the log.");
+        }
+        ImGui::SetItemTooltip("Copy every line above as plain text, and write it to the log.");
         EndCard();
     }
 
@@ -1173,12 +1422,7 @@ namespace TextureToolkit
         }
         EndCard();
 
-        BeginCard("build", "This build");
-        KeyValue("Version", TT_VERSION_STRING);
-        KeyValue("Architecture", sizeof(void *) == 8 ? "x64" : "x86");
-        KeyValue("Built", __DATE__ "  " __TIME__);
-        KeyValue("Graphics API", graphics_api_name());
-        EndCard();
+        DrawBuildInfoCard();
     }
 
     // -------------------------------------------------------------------------------------------
@@ -1189,16 +1433,17 @@ namespace TextureToolkit
         return std::string("v") + TT_VERSION_STRING + "  \xC2\xB7  " + graphics_api_name();
     }
 
-    // As narrow as the sidebar's own contents allow, at the sizes they are drawn at: nothing in it
-    // is shrunk or clipped to fit. Sized for the widest the badges get in practice (a five-digit
+    // As wide as the sidebar's own contents need, at the sizes they are drawn at (in practice the
+    // logo with the name beside it): nothing in it is shrunk or clipped to fit. Sized for the widest the badges get in practice (a five-digit
     // texture count, a three-digit failure count) so the panel does not shift as they change.
     static constexpr float kSidebarPad = 16.0f;
     static float sidebar_width()
     {
         float w = 0.0f;
-        w = (std::max)(w, font_strong()->CalcTextSizeA(kSizeBody, FLT_MAX, 0.0f, kBrandTitle).x);
-        w = (std::max)(w, font_body()->CalcTextSizeA(kSizeSmall, FLT_MAX, 0.0f, kBrandCredit).x);
-        w = (std::max)(w, font_body()->CalcTextSizeA(kSizeSmall, FLT_MAX, 0.0f, brand_version_line().c_str()).x);
+        float brand = font_strong()->CalcTextSizeA(kSizeBody, FLT_MAX, 0.0f, kBrandTitle).x;
+        brand = (std::max)(brand, font_body()->CalcTextSizeA(kSizeSmall, FLT_MAX, 0.0f, kBrandCredit).x);
+        brand = (std::max)(brand, font_body()->CalcTextSizeA(kSizeSmall, FLT_MAX, 0.0f, brand_version_line().c_str()).x);
+        w = (std::max)(w, kBrandLogo + kBrandGap + brand + 2.0f);
         w = (std::max)(w, NavItemMinWidth("Textures", "88888"));
         w = (std::max)(w, NavItemMinWidth("Mod files", "888"));
         w = (std::max)(w, NavItemMinWidth("Settings", nullptr));
@@ -1214,20 +1459,24 @@ namespace TextureToolkit
         Snapshot &snap = snapshot(tm);
         ImDrawList *dl = ImGui::GetWindowDrawList();
 
-        // Brand: the logo over the name, credit and version, stacked so the sidebar is as narrow
-        // as its navigation rather than as wide as the logo and the name side by side.
+        // Brand: the logo, with the name, credit and version beside it, centred on each other.
         {
             const ImVec2 p = ImGui::GetCursorScreenPos();
-            Logo::draw(dl, p, 40.0f);
-            float y = p.y + 40.0f + 10.0f;
-            dl->AddText(font_strong(), kSizeBody, ImVec2(p.x, y), u32(pal().text), kBrandTitle);
-            y += font_strong()->CalcTextSizeA(kSizeBody, FLT_MAX, 0.0f, kBrandTitle).y + 1.0f;
-            dl->AddText(font_body(), kSizeSmall, ImVec2(p.x, y), u32(pal().text_muted), kBrandCredit);
-            y += font_body()->CalcTextSizeA(kSizeSmall, FLT_MAX, 0.0f, kBrandCredit).y;
             const std::string sub = brand_version_line();
-            dl->AddText(font_body(), kSizeSmall, ImVec2(p.x, y), u32(pal().text_faint), sub.c_str());
-            y += font_body()->CalcTextSizeA(kSizeSmall, FLT_MAX, 0.0f, sub.c_str()).y;
-            ImGui::Dummy(ImVec2(width, y - p.y));
+            const float h_title = font_strong()->CalcTextSizeA(kSizeBody, FLT_MAX, 0.0f, kBrandTitle).y;
+            const float h_small = font_body()->CalcTextSizeA(kSizeSmall, FLT_MAX, 0.0f, kBrandCredit).y;
+            const float text_h = h_title + 1.0f + h_small * 2.0f;
+            const float block_h = (std::max)(kBrandLogo, text_h);
+
+            Logo::draw(dl, ImVec2(p.x, p.y + (block_h - kBrandLogo) * 0.5f), kBrandLogo);
+            const float x = p.x + kBrandLogo + kBrandGap;
+            float y = p.y + (block_h - text_h) * 0.5f;
+            dl->AddText(font_strong(), kSizeBody, ImVec2(x, y), u32(pal().text), kBrandTitle);
+            y += h_title + 1.0f;
+            dl->AddText(font_body(), kSizeSmall, ImVec2(x, y), u32(pal().text_muted), kBrandCredit);
+            y += h_small;
+            dl->AddText(font_body(), kSizeSmall, ImVec2(x, y), u32(pal().text_faint), sub.c_str());
+            ImGui::Dummy(ImVec2(width, block_h));
         }
 
         ImGui::Dummy(ImVec2(0.0f, 10.0f));

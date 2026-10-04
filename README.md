@@ -32,9 +32,15 @@ Storing the hash on the resource, instead of tracking raw pointers, keeps a repl
 
 ## The in-game panel
 
-Press `INSERT` to open it. The left pane lists tracked textures with hash, size, mip count, format, and status: injected (a replacement is bound), SK injected (the same, from a file using Special K's naming), pending (an inject file exists but nothing is bound yet), dumped, or original. The filter box matches on hash, dimensions, or format. Hover the list and press `[` or `]` to step through it.
+Press `INSERT` (or whatever `HotKey` is set to) to open it. A sidebar switches between four pages.
 
-The right pane inspects the selected texture. The preview shows the injected replacement, the live original while it is on screen, or the dumped `.dds` read back from disk. Below it are the dimensions, mip count, data size, format, the compressed and sRGB flags, and the D3D11 bind, usage, and misc flags. You can copy the hash or dump the texture from here, and drag the divider to resize the two panes.
+**Textures** lists everything the game has uploaded, with figures across the top for how many are tracked, injected, not yet applied, and dumped, and how much memory they take. Each row shows the hash, size, mip count, format, and status: injected (a replacement is on screen), SK injected (the same, from a file using Special K's naming), pending (an inject file exists and applies the next time the texture is drawn), failed (an inject file was refused; the log says why), dumped, or original. Click a column header to sort. The search box matches hash, dimensions, or format, in either spelling (`BC3` or `BC3_UNORM`). Hover the list and press `[` or `]` to step through it.
+
+When "Current scene only" is on, textures that are tracked but not being drawn are hidden, and the page says how many, with one click to show them.
+
+The inspector beside the list previews the selected texture on a checkerboard, so transparency reads as transparency: the injected replacement, the live original while it is on screen, or the dumped `.dds` read back from disk. Below it are the dimensions, mip count, data size, format, the compressed and sRGB flags, and the D3D11 bind, usage, and misc flags. Copy the hash or dump the texture from here, and drag the gap between the panes to resize them.
+
+**Mod files** shows how many inject files were found, applied, and refused, with Reload and the folder shortcuts. **Settings** holds the toggles, all saved to the ini as they change. **Diagnostics** has "Log this frame", which writes every texture drawn in the next frame to the log, and the details of the build that is running.
 
 ## Building
 

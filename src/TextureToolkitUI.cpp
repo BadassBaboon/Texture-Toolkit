@@ -6,6 +6,7 @@
 #include "Config.h"
 #include "Logger.h"
 #include "UITheme.h"
+#include "Logo.h"
 #include "Version.h"
 #include <windows.h>
 #include <shellapi.h>
@@ -363,14 +364,14 @@ namespace TextureToolkit
         {
             const ImVec2 ss = font_strong()->CalcTextSizeA(kSizeSmall, FLT_MAX, 0.0f, source);
             const ImVec2 c0(a.x + 10.0f, a.y + 10.0f), c1(c0.x + ss.x + 16.0f, c0.y + ss.y + 6.0f);
-            dl->AddRectFilled(c0, c1, u32(ImVec4(0.04f, 0.05f, 0.08f, 0.80f)), 999.0f);
+            dl->AddRectFilled(c0, c1, u32(ImVec4(0.059f, 0.055f, 0.051f, 0.80f)), 999.0f);
             dl->AddText(font_strong(), kSizeSmall, ImVec2(c0.x + 8.0f, c0.y + 3.0f), u32(pal().text), source);
 
             char dims[32];
             std::snprintf(dims, sizeof(dims), "%u x %u", pw, ph);
             const ImVec2 ds = font_mono()->CalcTextSizeA(kSizeSmall, FLT_MAX, 0.0f, dims);
             const ImVec2 d1(b.x - 10.0f, a.y + 10.0f + ds.y + 6.0f), d0(d1.x - ds.x - 16.0f, a.y + 10.0f);
-            dl->AddRectFilled(d0, d1, u32(ImVec4(0.04f, 0.05f, 0.08f, 0.80f)), 999.0f);
+            dl->AddRectFilled(d0, d1, u32(ImVec4(0.059f, 0.055f, 0.051f, 0.80f)), 999.0f);
             dl->AddText(font_mono(), kSizeSmall, ImVec2(d0.x + 8.0f, d0.y + 3.0f), u32(pal().text_muted), dims);
         }
     }
@@ -1178,13 +1179,12 @@ namespace TextureToolkit
         // Brand.
         {
             const ImVec2 p = ImGui::GetCursorScreenPos();
-            dl->AddRectFilled(p, ImVec2(p.x + 34.0f, p.y + 34.0f), u32(pal().accent), 9.0f);
-            draw_icon(dl, Icon::Layers, ImVec2(p.x + 17.0f, p.y + 17.0f), 18.0f, u32(pal().accent_text));
-            dl->AddText(font_strong(), kSizeBody, ImVec2(p.x + 46.0f, p.y + 1.0f), u32(pal().text), "TEXTURE TOOLKIT");
-            dl->AddText(font_body(), kSizeSmall, ImVec2(p.x + 46.0f, p.y + 19.0f), u32(pal().text_muted), "by BadassBaboon");
+            Logo::draw(dl, ImVec2(p.x, p.y + 3.0f), 40.0f);
+            dl->AddText(font_strong(), kSizeBody, ImVec2(p.x + 50.0f, p.y + 1.0f), u32(pal().text), "TEXTURE TOOLKIT");
+            dl->AddText(font_body(), kSizeSmall, ImVec2(p.x + 50.0f, p.y + 19.0f), u32(pal().text_muted), "by BadassBaboon");
             char sub[64];
             std::snprintf(sub, sizeof(sub), "v%s  \xC2\xB7  %s", TT_VERSION_STRING, graphics_api_name());
-            dl->AddText(font_body(), kSizeSmall, ImVec2(p.x + 46.0f, p.y + 35.0f), u32(pal().text_faint), sub);
+            dl->AddText(font_body(), kSizeSmall, ImVec2(p.x + 50.0f, p.y + 35.0f), u32(pal().text_faint), sub);
             ImGui::Dummy(ImVec2(width, 52.0f));
         }
 

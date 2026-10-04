@@ -26,7 +26,10 @@ namespace TextureToolkit::UI
     {
         ImVec4 text, text_muted, text_faint;
         ImVec4 surface, surface_raised, surface_sunken, border;
-        ImVec4 accent, accent_soft, accent_text;
+        // accent: brick, light enough to read as text or an icon on the dark surfaces.
+        // accent_fill: the logo's own brick, for filled controls; accent_soft is its hover.
+        // accent_text: text and icons drawn ON a filled control.
+        ImVec4 accent, accent_fill, accent_soft, accent_text;
         ImVec4 ok, warn, bad, info, neutral;
     };
     const Palette &pal();

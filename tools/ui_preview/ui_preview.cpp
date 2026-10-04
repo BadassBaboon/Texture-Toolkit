@@ -17,6 +17,7 @@
 #include "TextureToolkitUI.h"
 #include "TextureHash.h"
 #include "UITheme.h"
+#include "Logo.h"
 #include "Config.h"
 #include "Logger.h"
 #include "DDSLoader.h"
@@ -276,6 +277,7 @@ int main(int argc, char **argv)
     io.IniFilename = nullptr;
     io.DisplaySize = ImVec2(static_cast<float>(W), static_cast<float>(H));
     ImGui_ImplDX11_Init(dev, ctx);
+    Logo::create_d3d11(dev);
 
     D3D11_TEXTURE2D_DESC rtd = {};
     rtd.Width = W;

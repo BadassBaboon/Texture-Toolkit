@@ -21,22 +21,27 @@ namespace TextureToolkit::UI
         constexpr float kCardPad = 16.0f;
         constexpr float kCardRounding = 10.0f;
 
+        // Taken from the logo: Minecraft-style brick (a55b47 and the lighter b19f99 mortar) set in
+        // stone (5d5d5d to 9c9c9c). The surfaces are a warm charcoal under the stone so the panel
+        // stays dark; the brick that reads as text is a lightened a55b47, since the logo's own
+        // brick is too dark to read on them (3.5:1) and is kept for filled controls instead.
         const Palette kPalette = {
-            /* text           */ ImVec4(0.93f, 0.95f, 0.99f, 1.00f),
-            /* text_muted     */ ImVec4(0.63f, 0.68f, 0.79f, 1.00f),
-            /* text_faint     */ ImVec4(0.44f, 0.49f, 0.60f, 1.00f),
-            /* surface        */ ImVec4(0.067f, 0.082f, 0.125f, 0.96f),
-            /* surface_raised */ ImVec4(0.118f, 0.140f, 0.208f, 0.88f),
-            /* surface_sunken */ ImVec4(0.047f, 0.059f, 0.094f, 0.92f),
-            /* border         */ ImVec4(0.60f, 0.70f, 0.95f, 0.11f),
-            /* accent         */ ImVec4(0.58f, 0.70f, 1.00f, 1.00f),
-            /* accent_soft    */ ImVec4(0.74f, 0.80f, 0.95f, 1.00f),
-            /* accent_text    */ ImVec4(0.07f, 0.09f, 0.15f, 1.00f),
-            /* ok             */ ImVec4(0.42f, 0.87f, 0.61f, 1.00f),
-            /* warn           */ ImVec4(0.99f, 0.78f, 0.40f, 1.00f),
-            /* bad            */ ImVec4(1.00f, 0.48f, 0.48f, 1.00f),
-            /* info           */ ImVec4(0.48f, 0.75f, 1.00f, 1.00f),
-            /* neutral        */ ImVec4(0.63f, 0.68f, 0.79f, 1.00f),
+            /* text           */ ImVec4(0.949f, 0.925f, 0.914f, 1.00f),
+            /* text_muted     */ ImVec4(0.694f, 0.624f, 0.600f, 1.00f),
+            /* text_faint     */ ImVec4(0.533f, 0.533f, 0.533f, 1.00f),
+            /* surface        */ ImVec4(0.110f, 0.102f, 0.098f, 0.96f),
+            /* surface_raised */ ImVec4(0.165f, 0.149f, 0.141f, 0.88f),
+            /* surface_sunken */ ImVec4(0.078f, 0.075f, 0.071f, 0.92f),
+            /* border         */ ImVec4(0.612f, 0.612f, 0.612f, 0.13f),
+            /* accent         */ ImVec4(0.824f, 0.478f, 0.376f, 1.00f),
+            /* accent_fill    */ ImVec4(0.647f, 0.357f, 0.278f, 1.00f),
+            /* accent_soft    */ ImVec4(0.722f, 0.400f, 0.310f, 1.00f),
+            /* accent_text    */ ImVec4(0.969f, 0.945f, 0.933f, 1.00f),
+            /* ok             */ ImVec4(0.498f, 0.812f, 0.580f, 1.00f),
+            /* warn           */ ImVec4(0.910f, 0.733f, 0.384f, 1.00f),
+            /* bad            */ ImVec4(1.000f, 0.435f, 0.459f, 1.00f),
+            /* info           */ ImVec4(0.561f, 0.714f, 0.863f, 1.00f),
+            /* neutral        */ ImVec4(0.612f, 0.612f, 0.612f, 1.00f),
         };
 
         ImVec4 with_alpha(ImVec4 c, float a)
@@ -122,13 +127,13 @@ namespace TextureToolkit::UI
             c[ImGuiCol_TextDisabled] = p.text_faint;
             c[ImGuiCol_WindowBg] = p.surface;
             c[ImGuiCol_ChildBg] = ImVec4(0, 0, 0, 0);
-            c[ImGuiCol_PopupBg] = ImVec4(0.090f, 0.108f, 0.160f, 0.98f);
+            c[ImGuiCol_PopupBg] = ImVec4(0.133f, 0.122f, 0.118f, 0.98f);
             c[ImGuiCol_Border] = p.border;
             c[ImGuiCol_BorderShadow] = ImVec4(0, 0, 0, 0);
 
             c[ImGuiCol_FrameBg] = p.surface_sunken;
-            c[ImGuiCol_FrameBgHovered] = ImVec4(0.100f, 0.122f, 0.185f, 1.00f);
-            c[ImGuiCol_FrameBgActive] = ImVec4(0.125f, 0.152f, 0.228f, 1.00f);
+            c[ImGuiCol_FrameBgHovered] = ImVec4(0.149f, 0.137f, 0.129f, 1.00f);
+            c[ImGuiCol_FrameBgActive] = ImVec4(0.184f, 0.169f, 0.157f, 1.00f);
 
             c[ImGuiCol_TitleBg] = p.surface;
             c[ImGuiCol_TitleBgActive] = p.surface;
@@ -136,17 +141,17 @@ namespace TextureToolkit::UI
             c[ImGuiCol_MenuBarBg] = p.surface;
 
             c[ImGuiCol_ScrollbarBg] = ImVec4(0, 0, 0, 0);
-            c[ImGuiCol_ScrollbarGrab] = ImVec4(0.60f, 0.70f, 0.95f, 0.16f);
-            c[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.60f, 0.70f, 0.95f, 0.28f);
-            c[ImGuiCol_ScrollbarGrabActive] = ImVec4(0.60f, 0.70f, 0.95f, 0.40f);
+            c[ImGuiCol_ScrollbarGrab] = ImVec4(0.612f, 0.612f, 0.612f, 0.18f);
+            c[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.612f, 0.612f, 0.612f, 0.30f);
+            c[ImGuiCol_ScrollbarGrabActive] = ImVec4(0.612f, 0.612f, 0.612f, 0.42f);
 
             c[ImGuiCol_CheckMark] = p.accent;
-            c[ImGuiCol_SliderGrab] = p.accent;
+            c[ImGuiCol_SliderGrab] = p.accent_fill;
             c[ImGuiCol_SliderGrabActive] = p.accent_soft;
 
             c[ImGuiCol_Button] = p.surface_raised;
-            c[ImGuiCol_ButtonHovered] = ImVec4(0.160f, 0.190f, 0.280f, 1.00f);
-            c[ImGuiCol_ButtonActive] = ImVec4(0.200f, 0.235f, 0.340f, 1.00f);
+            c[ImGuiCol_ButtonHovered] = ImVec4(0.212f, 0.192f, 0.180f, 1.00f);
+            c[ImGuiCol_ButtonActive] = ImVec4(0.255f, 0.231f, 0.216f, 1.00f);
 
             c[ImGuiCol_Header] = with_alpha(p.accent, 0.20f);
             c[ImGuiCol_HeaderHovered] = with_alpha(p.accent, 0.11f);
@@ -161,10 +166,10 @@ namespace TextureToolkit::UI
             c[ImGuiCol_ResizeGripActive] = with_alpha(p.accent, 0.60f);
 
             c[ImGuiCol_Tab] = p.surface_raised;
-            c[ImGuiCol_TabHovered] = ImVec4(0.160f, 0.190f, 0.280f, 1.00f);
-            c[ImGuiCol_TabSelected] = ImVec4(0.180f, 0.215f, 0.315f, 1.00f);
+            c[ImGuiCol_TabHovered] = ImVec4(0.212f, 0.192f, 0.180f, 1.00f);
+            c[ImGuiCol_TabSelected] = ImVec4(0.275f, 0.247f, 0.231f, 1.00f);
 
-            c[ImGuiCol_TableHeaderBg] = ImVec4(0.090f, 0.108f, 0.160f, 1.00f);
+            c[ImGuiCol_TableHeaderBg] = ImVec4(0.133f, 0.122f, 0.118f, 1.00f);
             c[ImGuiCol_TableBorderStrong] = p.border;
             c[ImGuiCol_TableBorderLight] = with_alpha(p.border, 0.06f);
             c[ImGuiCol_TableRowBg] = ImVec4(0, 0, 0, 0);
@@ -432,14 +437,14 @@ namespace TextureToolkit::UI
         storage->SetFloat(anim_id, t);
 
         ImDrawList *dl = ImGui::GetWindowDrawList();
-        const ImVec4 off = hovered ? ImVec4(0.17f, 0.20f, 0.29f, 1.0f) : ImVec4(0.13f, 0.155f, 0.225f, 1.0f);
-        const ImVec4 on = hovered ? kPalette.accent_soft : kPalette.accent;
+        const ImVec4 off = hovered ? ImVec4(0.255f, 0.231f, 0.216f, 1.00f) : ImVec4(0.212f, 0.192f, 0.180f, 1.00f);
+        const ImVec4 on = hovered ? kPalette.accent_soft : kPalette.accent_fill;
         const ImVec4 track(off.x + (on.x - off.x) * t, off.y + (on.y - off.y) * t,
                            off.z + (on.z - off.z) * t, 1.0f);
         dl->AddRectFilled(p, ImVec2(p.x + width, p.y + height), u32(track), radius);
 
         const float knob_x = p.x + radius + t * (width - 2.0f * radius);
-        const ImVec4 knob = (t > 0.5f) ? kPalette.accent_text : ImVec4(0.80f, 0.84f, 0.93f, 1.0f);
+        const ImVec4 knob = (t > 0.5f) ? kPalette.accent_text : ImVec4(0.784f, 0.784f, 0.784f, 1.00f);
         dl->AddCircleFilled(ImVec2(knob_x, p.y + radius), radius - 3.0f, u32(knob));
         return clicked;
     }
@@ -495,9 +500,9 @@ namespace TextureToolkit::UI
         switch (kind)
         {
         case ButtonKind::Primary:
-            ImGui::PushStyleColor(ImGuiCol_Button, kPalette.accent);
+            ImGui::PushStyleColor(ImGuiCol_Button, kPalette.accent_fill);
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kPalette.accent_soft);
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.48f, 0.60f, 0.92f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.557f, 0.302f, 0.235f, 1.00f));
             ImGui::PushStyleColor(ImGuiCol_Text, kPalette.accent_text);
             colors = 4;
             break;
@@ -551,7 +556,7 @@ namespace TextureToolkit::UI
         ImDrawList *dl = ImGui::GetWindowDrawList();
 
         if (selected)
-            dl->AddRectFilled(p, ImVec2(p.x + width, p.y + height), u32(kPalette.accent_soft), 9.0f);
+            dl->AddRectFilled(p, ImVec2(p.x + width, p.y + height), u32(kPalette.accent_fill), 9.0f);
         else if (hovered)
             dl->AddRectFilled(p, ImVec2(p.x + width, p.y + height), u32(ImVec4(1, 1, 1, 0.05f)), 9.0f);
 
@@ -651,7 +656,7 @@ namespace TextureToolkit::UI
 
     void Checkerboard(ImDrawList *dl, ImVec2 a, ImVec2 b, float cell, float rounding)
     {
-        dl->AddRectFilled(a, b, u32(ImVec4(0.16f, 0.18f, 0.24f, 1.0f)), rounding);
+        dl->AddRectFilled(a, b, u32(ImVec4(0.200f, 0.200f, 0.200f, 1.00f)), rounding);
         dl->PushClipRect(ImVec2(a.x + 1.0f, a.y + 1.0f), ImVec2(b.x - 1.0f, b.y - 1.0f), true);
         const ImU32 light = u32(ImVec4(0.22f, 0.245f, 0.32f, 1.0f));
         int row = 0;

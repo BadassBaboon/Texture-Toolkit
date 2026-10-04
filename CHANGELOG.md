@@ -40,6 +40,13 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
   Toolkit Discord in the browser.
 
 ### Changed
+- **The Texture Toolkit logo and a palette taken from it.** The brick-and-stone logo replaces the
+  drawn badge in the sidebar and on the startup banner; it is compiled into the `.asi`
+  (`assets/logo.png`, regenerated into `src/LogoData.h` by `tools/embed_logo.py`), so there is still
+  only one file to install. The panel stays dark, now in warm charcoal and stone with brick for
+  selections, switches and primary buttons. Brick that reads as text is a lightened shade of the
+  logo's, which is too dark to read on the panel itself, and the error red is pinker than the brick
+  so the two cannot be confused.
 - The panel and the startup banner credit BadassBaboon again, as before the redesign.
 - The sidebar's status box appears only once there is something to report (a reload, a dump, a
   refused file); it no longer sits there saying "Ready".

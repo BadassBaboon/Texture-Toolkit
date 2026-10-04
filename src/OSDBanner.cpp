@@ -3,6 +3,7 @@
 #include "Config.h"
 #include "TextureManager.h"
 #include "UITheme.h"
+#include "Logo.h"
 #include <imgui.h>
 #include <algorithm>
 #include <cfloat>
@@ -114,9 +115,7 @@ namespace TextureToolkit
         dl->AddRect(a, b, u32(ImVec4(p.accent.x, p.accent.y, p.accent.z, 0.35f * alpha)), 16.0f, 0, 1.0f);
 
         const ImVec2 i0(a.x + pad, a.y + (h - icon) * 0.5f);
-        dl->AddRectFilled(i0, ImVec2(i0.x + icon, i0.y + icon), u32(ImVec4(p.accent.x, p.accent.y, p.accent.z, alpha)), 10.0f);
-        draw_icon(dl, Icon::Layers, ImVec2(i0.x + icon * 0.5f, i0.y + icon * 0.5f), 20.0f,
-                  u32(ImVec4(p.accent_text.x, p.accent_text.y, p.accent_text.z, alpha)));
+        Logo::draw(dl, i0, icon, alpha);
 
         const auto fade = [alpha](ImVec4 c) { c.w *= alpha; return c; };
         float x = i0.x + icon + gap;

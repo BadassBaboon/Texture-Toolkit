@@ -12,6 +12,7 @@
 #include "UITheme.h"
 #include "Config.h"
 #include "Logger.h"
+#include "Logo.h"
 #include <atomic>
 #include <imgui.h>
 #include "imgui_impl_win32.h"
@@ -443,6 +444,7 @@ namespace TextureToolkit
 
         if (m_imgui_initialized)
         {
+            Logo::release();
             ImGui_ImplDX9_Shutdown();
             ImGui_ImplWin32_Shutdown();
             ImGui::DestroyContext();
@@ -492,6 +494,7 @@ namespace TextureToolkit
 
         ImGui_ImplWin32_Init(m_hwnd);
         ImGui_ImplDX9_Init(device);
+        Logo::create_d3d9(device);
 
         m_imgui_initialized = true;
         Logger::get().info("[D3D9Hook] Dear ImGui initialized natively for real game DirectX 9 device.");

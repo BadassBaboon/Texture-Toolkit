@@ -3,12 +3,71 @@
 #include <fstream>
 #include <sstream>
 #include <cstdio>
+#include <algorithm>
 
 #include <imgui.h>
 
 // Defined in imgui_impl_win32.cpp with external linkage, but not declared in its header, so it is
 // declared here rather than by reaching into the backend's source.
 ImGuiKey ImGui_ImplWin32_KeyEventToImGuiKey(WPARAM wParam, LPARAM lParam);
+
+namespace
+{
+    // The ini is written as an ANSI file, which is how GetPrivateProfileStringW reads one back.
+    std::string to_ini_text(const std::wstring &w)
+    {
+        if (w.empty())
+            return {};
+        const int n = WideCharToMultiByte(CP_ACP, 0, w.c_str(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
+        std::string out(static_cast<size_t>((std::max)(n, 0)), '\0');
+        if (n > 0)
+            WideCharToMultiByte(CP_ACP, 0, w.c_str(), static_cast<int>(w.size()), out.data(), n, nullptr, nullptr);
+        return out;
+    }
+
+    std::wstring trim(const std::wstring &s)
+    {
+        const size_t b = s.find_first_not_of(L" \t\r\n");
+        if (b == std::wstring::npos)
+            return {};
+        const size_t e = s.find_last_not_of(L" \t\r\n");
+        return s.substr(b, e - b + 1);
+    }
+
+    // "DualShock; inject ;;DarkMode" -> {DualShock, inject, DarkMode}: pieces trimmed, empty and
+    // repeated ones dropped, so a hand-edited list cannot produce a blank or doubled entry.
+    std::vector<std::wstring> split_list(const std::wstring &value)
+    {
+        std::vector<std::wstring> out;
+        size_t start = 0;
+        while (start <= value.size())
+        {
+            size_t end = value.find(L';', start);
+            if (end == std::wstring::npos)
+                end = value.size();
+            const std::wstring piece = trim(value.substr(start, end - start));
+            bool dup = false;
+            for (const std::wstring &o : out)
+                dup |= (_wcsicmp(o.c_str(), piece.c_str()) == 0);
+            if (!piece.empty() && !dup)
+                out.push_back(piece);
+            start = end + 1;
+        }
+        return out;
+    }
+
+    std::string join_list(const std::vector<std::wstring> &items)
+    {
+        std::string out;
+        for (size_t i = 0; i < items.size(); ++i)
+        {
+            if (i != 0)
+                out += ';';
+            out += to_ini_text(items[i]);
+        }
+        return out;
+    }
+}
 
 namespace TextureToolkit
 {
@@ -96,6 +155,30 @@ namespace TextureToolkit
         // Diagnostics
         m_config.verbose = GetPrivateProfileIntW(L"TextureToolkit", L"Verbose", 0, ini_w) != 0;
 
+        // Mods: load order, and the per-mod switches the user has set from the panel.
+        {
+            std::vector<wchar_t> buf(32768, L'\0');
+            GetPrivateProfileStringW(L"Mods", L"LoadOrder", L"", buf.data(), static_cast<DWORD>(buf.size()), ini_w);
+            m_config.mod_load_order = split_list(buf.data());
+
+            // A section comes back as "key=value\0key=value\0\0".
+            std::fill(buf.begin(), buf.end(), L'\0');
+            GetPrivateProfileSectionW(L"ModEnabled", buf.data(), static_cast<DWORD>(buf.size()), ini_w);
+            m_config.mod_enabled.clear();
+            for (const wchar_t *entry = buf.data(); *entry != L'\0'; entry += wcslen(entry) + 1)
+            {
+                const std::wstring line(entry);
+                const size_t eq = line.find(L'=');
+                if (eq == std::wstring::npos)
+                    continue;
+                const std::wstring key = trim(line.substr(0, eq));
+                const std::wstring value = trim(line.substr(eq + 1));
+                // Comment lines can come back as entries too, and ours has an '=' in it.
+                if (!key.empty() && key[0] != L';' && key[0] != L'#')
+                    m_config.mod_enabled[key] = parse_ini_bool(value, true);
+            }
+        }
+
         Logger::get().info("[ConfigManager] Configuration loaded from " + m_ini_path.string());
 
         // The values, not just the path. Every diagnosis from a user's log has to start by knowing
@@ -140,7 +223,16 @@ namespace TextureToolkit
              << "; On-Screen Display (OSD)\n"
              << "ShowOSDBanner=" << (m_config.show_osd_banner ? 1 : 0) << "\n\n"
              << "; Diagnostics: 1 = verbose per-texture debug logging (slow)\n"
-             << "Verbose=" << (m_config.verbose ? 1 : 0) << "\n";
+             << "Verbose=" << (m_config.verbose ? 1 : 0) << "\n\n"
+             << "[Mods]\n"
+             << "; Every folder in ResourceRoot other than dump and inject is a texture mod.\n"
+             << "; Load order, highest priority first, separated by ';'. \"inject\" is the inject folder.\n"
+             << "; Mods not listed load after the ones that are. Set from the panel's Mod files page.\n"
+             << "LoadOrder=" << join_list(m_config.mod_load_order) << "\n\n"
+             << "[ModEnabled]\n"
+             << "; <mod folder>=1 or 0 switches a mod on or off, overriding its own mod.ini default.\n";
+        for (const auto &kv : m_config.mod_enabled)
+            file << to_ini_text(kv.first) << "=" << (kv.second ? 1 : 0) << "\n";
 
         file.close();
         // The values on save as well as on load. A user toggling a checkbox mid-session and a user

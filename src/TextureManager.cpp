@@ -10,6 +10,7 @@
 #include <iomanip>
 #include <algorithm>
 #include <cstring>
+#include <cwctype>
 
 namespace TextureToolkit
 {
@@ -497,6 +498,7 @@ namespace TextureToolkit
         // taken relative to the game directory; an absolute root is used as-is (operator/
         // returns the right-hand path when it is absolute).
         std::filesystem::path root = m_game_dir / cfg.resource_root;
+        m_resource_root = root;
         m_dump_dir = root / "dump";
         m_inject_dir = root / "inject";
 
@@ -818,74 +820,231 @@ namespace TextureToolkit
         }
     }
 
-    void TextureManager::rescan_injected()
+    static std::string wide_to_utf8(const std::wstring &w)
     {
-        // Walk the directory WITHOUT the manager lock. The bind hooks take that lock on the render
-        // thread, so scanning a slow disk (or a resource root on a network share) while holding it
-        // stalls texture tracking for as long as the scan takes. Build the new map first, then swap.
-        std::unordered_map<uint64_t, std::filesystem::path> found;
-        std::unordered_map<uint32_t, std::filesystem::path> found_sk;
+        if (w.empty())
+            return {};
+        const int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
+        std::string out(static_cast<size_t>((std::max)(n, 0)), '\0');
+        if (n > 0)
+            WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), out.data(), n, nullptr, nullptr);
+        return out;
+    }
 
-        std::error_code scan_ec;
-        if (std::filesystem::exists(m_inject_dir, scan_ec) && !scan_ec)
+    // Collects the replacement files in one folder into `found` (our naming) and `found_sk`
+    // (Special K's). A mod folder is walked recursively so it can be organised into subfolders;
+    // the inject folder is not, as before. Files are taken in sorted path order so a hash two
+    // files claim resolves the same way every run, with the unprefixed spelling preferred.
+    static void scan_replacement_dir(const std::filesystem::path &dir, bool recursive,
+                                     std::unordered_map<uint64_t, std::filesystem::path> &found,
+                                     std::unordered_map<uint32_t, std::filesystem::path> &found_sk)
+    {
+        std::error_code ec;
+        if (!std::filesystem::is_directory(dir, ec) || ec)
+            return;
+
+        std::vector<std::filesystem::path> files;
+        const auto consider = [&files](const std::filesystem::directory_entry &entry)
         {
-            for (std::filesystem::directory_iterator it(m_inject_dir, scan_ec), end_it; it != end_it && !scan_ec; it.increment(scan_ec))
+            std::error_code fec;
+            if (!entry.is_regular_file(fec) || fec)
+                return;
+            std::wstring ext = entry.path().extension().wstring();
+            std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
+            if (ext == L".dds") // DDS-only injection, for format safety
+                files.push_back(entry.path());
+        };
+        if (recursive)
+        {
+            for (std::filesystem::recursive_directory_iterator it(dir, std::filesystem::directory_options::skip_permission_denied, ec), end_it;
+                 it != end_it && !ec; it.increment(ec))
+                consider(*it);
+        }
+        else
+        {
+            for (std::filesystem::directory_iterator it(dir, ec), end_it; it != end_it && !ec; it.increment(ec))
+                consider(*it);
+        }
+        std::sort(files.begin(), files.end());
+
+        for (const std::filesystem::path &file : files)
+        {
+            std::string stem = wide_to_utf8(file.stem().wstring());
+            const bool prefixed = (stem.rfind("0x", 0) == 0 || stem.rfind("0X", 0) == 0);
+            if (prefixed)
+                stem = stem.substr(2);
+
+            // Special K names a pack <topCRC>.dds or <topCRC>_<fullCRC>.dds, optionally
+            // prefixed "Uncompressed_" and/or suffixed "_TYPELESS". We key on the top-LOD CRC,
+            // which is the part we can reproduce, and ignore the rest of the name.
+            if (stem.size() != 16)
             {
-                const std::filesystem::directory_entry &entry = *it;
-                if (!entry.is_regular_file(scan_ec) || scan_ec)
-                    continue;
+                std::string sk = stem;
+                if (sk.rfind("Uncompressed_", 0) == 0)
+                    sk = sk.substr(13);
+                const size_t underscore = sk.find('_');
+                if (underscore != std::string::npos)
+                    sk = sk.substr(0, underscore);
 
-                std::string ext = entry.path().extension().string();
-                std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-                if (ext != ".dds") // DDS-only injection, for format safety
-                    continue;
-
-                std::string stem = entry.path().stem().string();
-                const bool prefixed = (stem.rfind("0x", 0) == 0 || stem.rfind("0X", 0) == 0);
-                if (prefixed)
-                    stem = stem.substr(2);
-
-                // Special K names a pack <topCRC>.dds or <topCRC>_<fullCRC>.dds, optionally
-                // prefixed "Uncompressed_" and/or suffixed "_TYPELESS". We key on the top-LOD CRC,
-                // which is the part we can reproduce, and ignore the rest of the name.
-                if (stem.size() != 16)
+                if (sk.size() == 8 && sk.find_first_not_of("0123456789abcdefABCDEF") == std::string::npos)
                 {
-                    std::string sk = stem;
-                    if (sk.rfind("Uncompressed_", 0) == 0)
-                        sk = sk.substr(13);
-                    const size_t underscore = sk.find('_');
-                    if (underscore != std::string::npos)
-                        sk = sk.substr(0, underscore);
-
-                    if (sk.size() == 8 && sk.find_first_not_of("0123456789abcdefABCDEF") == std::string::npos)
+                    try
                     {
-                        try
-                        {
-                            found_sk.emplace(static_cast<uint32_t>(std::stoul(sk, nullptr, 16)), entry.path());
-                        }
-                        catch (...)
-                        {
-                        }
-                        continue;
+                        found_sk.emplace(static_cast<uint32_t>(std::stoul(sk, nullptr, 16)), file);
                     }
-                }
-
-                try
-                {
-                    const uint64_t hash = std::stoull(stem, nullptr, 16);
-                    // Two files naming one hash must resolve the same way every run, not by
-                    // directory order: the unprefixed spelling wins.
-                    auto existing = found.find(hash);
-                    if (existing == found.end())
-                        found.emplace(hash, entry.path());
-                    else if (!prefixed)
-                        existing->second = entry.path();
-                }
-                catch (...)
-                {
-                    // Ignore non-hex filenames
+                    catch (...)
+                    {
+                    }
+                    continue;
                 }
             }
+
+            try
+            {
+                const uint64_t hash = std::stoull(stem, nullptr, 16);
+                // Two files naming one hash must resolve the same way every run, not by
+                // directory order: the unprefixed spelling wins.
+                auto existing = found.find(hash);
+                if (existing == found.end())
+                    found.emplace(hash, file);
+                else if (!prefixed)
+                {
+                    const std::wstring other = existing->second.stem().wstring();
+                    if (other.rfind(L"0x", 0) == 0 || other.rfind(L"0X", 0) == 0)
+                        existing->second = file;
+                }
+            }
+            catch (...)
+            {
+                // Ignore non-hex filenames
+            }
+        }
+    }
+
+    std::vector<TextureManager::ModInfo> TextureManager::discover_mods() const
+    {
+        const Configuration &cfg = ConfigManager::get().get_config();
+
+        ModInfo base;
+        base.id = kBaseModId;
+        base.is_base = true;
+        base.dir = m_inject_dir;
+        base.name = "inject";
+        base.description = "Your own replacements. Always loaded while Replace textures is on.";
+
+        // Every folder in the resource root is a mod, apart from our own two. With the root set to
+        // the game folder (or a drive), that would make every folder of game data a mod and scan
+        // it, so there only folders that carry a mod.ini count.
+        std::error_code eq_ec;
+        const bool shared_root = std::filesystem::equivalent(m_resource_root, m_game_dir, eq_ec) ||
+                                 m_resource_root == m_resource_root.root_path();
+        std::vector<ModInfo> pool;
+        std::error_code ec;
+        for (std::filesystem::directory_iterator it(m_resource_root, ec), end_it; it != end_it && !ec; it.increment(ec))
+        {
+            std::error_code dec;
+            if (!it->is_directory(dec) || dec)
+                continue;
+            const std::wstring folder = it->path().filename().wstring();
+            if (folder.empty() || folder[0] == L'.' ||
+                _wcsicmp(folder.c_str(), L"dump") == 0 || _wcsicmp(folder.c_str(), L"inject") == 0)
+                continue;
+
+            const std::filesystem::path manifest = it->path() / "mod.ini";
+            std::error_code mec;
+            const bool has_manifest = std::filesystem::is_regular_file(manifest, mec) && !mec;
+            if (shared_root && !has_manifest)
+                continue;
+
+            ModInfo m;
+            m.id = folder;
+            m.dir = it->path();
+            m.name = wide_to_utf8(folder);
+
+            // Optional description: <mod>\mod.ini, section [Mod].
+            if (has_manifest)
+            {
+                m.has_manifest = true;
+                const std::wstring ini = manifest.wstring();
+                const auto read = [&ini](const wchar_t *key)
+                {
+                    wchar_t buf[2048] = L"";
+                    GetPrivateProfileStringW(L"Mod", key, L"", buf, ARRAYSIZE(buf), ini.c_str());
+                    return std::wstring(buf);
+                };
+                const std::string name = wide_to_utf8(read(L"Name"));
+                if (!name.empty())
+                    m.name = name;
+                m.author = wide_to_utf8(read(L"Author"));
+                m.version = wide_to_utf8(read(L"Version"));
+                m.description = wide_to_utf8(read(L"Description"));
+                m.enabled_default = parse_ini_bool(read(L"Enabled"), true);
+            }
+
+            m.enabled = m.enabled_default;
+            auto ov = cfg.mod_enabled.find(folder);
+            if (ov != cfg.mod_enabled.end())
+            {
+                m.enabled = ov->second;
+                m.overridden = true;
+            }
+            pool.push_back(std::move(m));
+        }
+        pool.push_back(std::move(base));
+
+        // The configured order first, then whatever it does not name: the inject folder ahead of
+        // the rest if it was not placed, and new mods after everything, alphabetically.
+        std::vector<ModInfo> ordered;
+        const auto take = [&pool, &ordered](const std::wstring &id)
+        {
+            for (auto it = pool.begin(); it != pool.end(); ++it)
+            {
+                if (_wcsicmp(it->id.c_str(), id.c_str()) == 0)
+                {
+                    ordered.push_back(std::move(*it));
+                    pool.erase(it);
+                    return true;
+                }
+            }
+            return false;
+        };
+        for (const std::wstring &id : cfg.mod_load_order)
+            take(id);
+        const bool base_placed = std::any_of(ordered.begin(), ordered.end(), [](const ModInfo &m) { return m.is_base; });
+        if (!base_placed)
+        {
+            take(kBaseModId);
+            std::rotate(ordered.begin(), ordered.end() - 1, ordered.end());
+        }
+        std::sort(pool.begin(), pool.end(), [](const ModInfo &a, const ModInfo &b) { return _wcsicmp(a.id.c_str(), b.id.c_str()) < 0; });
+        for (ModInfo &m : pool)
+            ordered.push_back(std::move(m));
+        return ordered;
+    }
+
+    void TextureManager::rescan_injected()
+    {
+        // Walk the folders WITHOUT the manager lock. The bind hooks take that lock on the render
+        // thread, so scanning a slow disk (or a resource root on a network share) while holding it
+        // stalls texture tracking for as long as the scan takes. Build the new map first, then swap.
+        std::vector<ModInfo> mods = discover_mods();
+
+        // Highest priority first, and a hash already supplied is never replaced, so the first
+        // enabled source that ships a file for a hash is the one used.
+        std::unordered_map<uint64_t, std::filesystem::path> found;
+        std::unordered_map<uint32_t, std::filesystem::path> found_sk;
+        for (ModInfo &m : mods)
+        {
+            if (!m.enabled)
+                continue;
+            std::unordered_map<uint64_t, std::filesystem::path> dir_found;
+            std::unordered_map<uint32_t, std::filesystem::path> dir_found_sk;
+            scan_replacement_dir(m.dir, !m.is_base, dir_found, dir_found_sk);
+            m.file_count = dir_found.size() + dir_found_sk.size();
+            for (auto &kv : dir_found)
+                m.provided += found.emplace(kv.first, std::move(kv.second)).second ? 1 : 0;
+            for (auto &kv : dir_found_sk)
+                m.provided += found_sk.emplace(kv.first, std::move(kv.second)).second ? 1 : 0;
         }
 
         {
@@ -902,6 +1061,7 @@ namespace TextureToolkit
             m_have_sk_files.store(!m_sk_injected_files.empty(), std::memory_order_relaxed);
             m_failed_injections.clear(); // retry files that were bad last time; they may be fixed now
             m_pending_injections.clear();
+            m_mods = mods;
 
             // Replacements are rebuilt after the next time each texture is drawn (flagged by
             // note_pending_injection, built by process_pending_injections), so newly added DDS
@@ -916,11 +1076,64 @@ namespace TextureToolkit
                     pair.second.status = TextureStatus::ORIGINAL;
             }
 
-            Logger::get().info("[TextureManager] Scanned " + std::to_string(m_injected_files.size()) + " DDS replacement file(s) in TT/inject.");
+            Logger::get().info("[TextureManager] Scanned " + std::to_string(m_injected_files.size()) + " DDS replacement file(s) across TT/inject and " +
+                               std::to_string(mods.size() - 1) + " mod folder(s).");
             if (!m_sk_injected_files.empty())
                 Logger::get().info("[TextureManager] Also found " + std::to_string(m_sk_injected_files.size()) +
                                    " Special K-named file(s); these match on the top-mip CRC-32C.");
         }
+
+        // The load order as it was applied, so a log shows which mod a replacement came from.
+        for (size_t i = 0; i < mods.size(); ++i)
+        {
+            const ModInfo &m = mods[i];
+            std::string line = "[TextureManager] Load order " + std::to_string(i + 1) + ": " +
+                               (m.is_base ? std::string("inject") : wide_to_utf8(m.id));
+            if (!m.is_base && m.has_manifest)
+                line += " (\"" + m.name + "\"" + (m.version.empty() ? "" : " " + m.version) + ")";
+            if (!m.enabled)
+                line += std::string(" off") + (m.overridden ? " (TextureToolkit.ini)" : " (mod default)");
+            else
+                line += ", " + std::to_string(m.file_count) + " file(s), " + std::to_string(m.provided) + " used";
+            Logger::get().info(line);
+        }
+    }
+
+    std::vector<TextureManager::ModInfo> TextureManager::get_mods() const
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_mods;
+    }
+
+    void TextureManager::set_mod_enabled(const std::wstring &id, bool enabled)
+    {
+        ConfigManager &cm = ConfigManager::get();
+        cm.get_config().mod_enabled[id] = enabled;
+        cm.save();
+        rescan_injected();
+    }
+
+    void TextureManager::move_mod(const std::wstring &id, int delta)
+    {
+        std::vector<std::wstring> order;
+        for (const ModInfo &m : get_mods())
+            order.push_back(m.id);
+
+        const auto it = std::find_if(order.begin(), order.end(),
+                                     [&id](const std::wstring &o) { return _wcsicmp(o.c_str(), id.c_str()) == 0; });
+        if (it == order.end())
+            return;
+        const ptrdiff_t from = it - order.begin();
+        const ptrdiff_t to = (std::max)(ptrdiff_t(0), (std::min)(static_cast<ptrdiff_t>(order.size()) - 1, from + delta));
+        if (to == from)
+            return;
+        std::swap(order[static_cast<size_t>(from)], order[static_cast<size_t>(to)]);
+
+        // The whole order is written, so it is fixed from here on rather than re-derived.
+        ConfigManager &cm = ConfigManager::get();
+        cm.get_config().mod_load_order = order;
+        cm.save();
+        rescan_injected();
     }
 
     std::filesystem::path TextureManager::find_injection_path(uint64_t hash, uint32_t sk_hash, bool *via_sk_name)

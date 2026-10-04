@@ -321,6 +321,15 @@ namespace TextureToolkit::UI
             dl->AddCircleFilled(ImVec2(c.x, c.y - h * 0.42f), t * 0.9f, col);
             break;
         }
+        case Icon::ChevronUp:
+        case Icon::ChevronDown:
+        {
+            const float dy = (icon == Icon::ChevronUp) ? -1.0f : 1.0f;
+            const ImVec2 pts[] = { ImVec2(c.x - h * 0.6f, c.y - dy * h * 0.3f), ImVec2(c.x, c.y + dy * h * 0.3f),
+                                   ImVec2(c.x + h * 0.6f, c.y - dy * h * 0.3f) };
+            dl->AddPolyline(pts, 3, col, ImDrawFlags_None, t * 1.2f);
+            break;
+        }
         }
     }
 
@@ -389,6 +398,17 @@ namespace TextureToolkit::UI
     // ---------------------------------------------------------------------------------------
     // Controls
     // ---------------------------------------------------------------------------------------
+    ImVec2 ToggleSwitchSize()
+    {
+        const float height = ImGui::GetFrameHeight() * 0.74f;
+        return ImVec2(height * 1.8f, height);
+    }
+
+    float CardRightEdge()
+    {
+        return right_edge();
+    }
+
     bool ToggleSwitch(const char *id, bool *v)
     {
         const float height = ImGui::GetFrameHeight() * 0.74f;

@@ -82,6 +82,7 @@ namespace TextureToolkit
 
         std::filesystem::path get_dump_dir() const { return m_dump_dir; }
         std::filesystem::path get_inject_dir() const { return m_inject_dir; }
+        std::filesystem::path get_resource_root() const { return m_resource_root; }
 
         // Settings
         bool auto_dump = false;
@@ -108,6 +109,30 @@ namespace TextureToolkit
             size_t failed = 0;
         };
         InjectionStats get_injection_stats();
+
+        // One source of replacement files: the inject folder itself, or a texture mod (any other
+        // folder under the resource root, optionally described by a mod.ini). Listed by
+        // get_mods() in load order, highest priority first: where two enabled sources ship the
+        // same hash, the earlier one's file is used.
+        struct ModInfo
+        {
+            std::wstring id;             // folder name; kBaseModId for the inject folder
+            bool is_base = false;        // the inject folder, which cannot be switched off here
+            std::filesystem::path dir;
+            bool has_manifest = false;   // a mod.ini was found
+            std::string name;            // UTF-8, for the panel; the folder name without a mod.ini
+            std::string author, version, description;
+            bool enabled_default = true; // mod.ini's Enabled, or on without one
+            bool enabled = true;         // after any [ModEnabled] override in TextureToolkit.ini
+            bool overridden = false;     // TextureToolkit.ini decides, not the mod's own default
+            size_t file_count = 0;       // replacement files found in it (0 while it is off)
+            size_t provided = 0;         // of those, how many are not shadowed by a higher mod
+        };
+        std::vector<ModInfo> get_mods() const;
+
+        // Both persist to TextureToolkit.ini and rescan, so the change applies at once.
+        void set_mod_enabled(const std::wstring &id, bool enabled);
+        void move_mod(const std::wstring &id, int delta); // negative = higher priority
 
         // Live original-texture preview. The UI names one hash as the preview target; the
         // next time that texture is bound we take a COM reference to the exact resource the
@@ -165,8 +190,14 @@ namespace TextureToolkit
         ~TextureManager();
 
         std::filesystem::path m_game_dir;
+        std::filesystem::path m_resource_root;
         std::filesystem::path m_dump_dir;
         std::filesystem::path m_inject_dir;
+
+        // The inject folder plus every mod folder, in load order, with enabled state resolved.
+        // Built from disk and the config by rescan_injected; m_mods is its last result.
+        std::vector<ModInfo> discover_mods() const;
+        std::vector<ModInfo> m_mods;
 
         mutable std::mutex m_mutex;
         uint64_t m_frame_count = 0;

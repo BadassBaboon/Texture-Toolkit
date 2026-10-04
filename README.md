@@ -103,13 +103,64 @@ Verbose=0
 - `ShowOSDBanner`: show the startup banner.
 - `Verbose`: write per-texture debug lines to the log; leave off for normal use, since it slows the game.
 
-Toggling a checkbox in the panel writes its new value back to this file.
+Toggling a checkbox in the panel writes its new value back to this file. The mod load order and
+any mod you switch on or off from the panel are kept in two more sections, `[Mods]` and
+`[ModEnabled]`; see [Texture mods](#texture-mods).
+
+## Texture mods
+
+`TT/inject` is for your own replacements. A mod you download, or one you publish, goes in a folder
+of its own next to it, and every folder in `TT` other than `dump` and `inject` is loaded as a mod:
+
+```
+TT/
+  inject/          your own replacements
+  DualShock/       a mod: its .dds files, in subfolders if it likes
+    mod.ini        optional
+  DarkMode/
+```
+
+Each mod shows on the panel's **Mod files** page with a switch to turn it on or off, and the
+buttons to move it up or down the load order. Where two sources ship a file for the same texture,
+the one higher in the list wins. `TT/inject` is in that list too, at the top by default, so your own
+edits win over any mod until you move a mod above it. A new mod starts at the bottom. Changes apply
+at once, and **Reload replacements** picks up a mod folder added while the game runs.
+
+A mod can describe itself with a `mod.ini` in its folder. Every key is optional; without the file
+the folder name is shown and the mod is on.
+
+```ini
+[Mod]
+Name=DualShock Button Prompts
+Author=Someone
+Version=1.2
+Description=Replaces the keyboard prompts with PlayStation buttons.
+; Whether the mod is on when first installed: 1/0, true/false, yes/no or on/off.
+Enabled=1
+```
+
+What the panel changes is written to `TextureToolkit.ini`, and that always wins over the mod's own
+`Enabled`:
+
+```ini
+[Mods]
+; Highest priority first. "inject" is TT/inject. Mods not listed load after the ones that are.
+LoadOrder=inject;DualShock;DarkMode
+
+[ModEnabled]
+; Per mod folder, overriding its mod.ini Enabled.
+DarkMode=0
+```
+
+If `ResourceRoot` is set to the game folder itself, only folders with a `mod.ini` are treated as
+mods, so the game's own folders are never scanned for textures.
 
 ## Sharing a texture mod
 
-A texture is identified by a 64-bit hash of its original pixel data, so an `inject` folder works
-on anyone else's copy of the same game. To publish a mod, ship the `.dds` files and tell people to
-drop them in `TT/inject` with Texture Toolkit installed.
+A texture is identified by a 64-bit hash of its original pixel data, so a mod works on anyone
+else's copy of the same game. To publish one, put its `.dds` files in a folder with a `mod.ini`
+(see [Texture mods](#texture-mods)) and tell people to drop that folder into `TT` with Texture
+Toolkit installed.
 
 Two things decide whether a hash matches on someone else's machine:
 

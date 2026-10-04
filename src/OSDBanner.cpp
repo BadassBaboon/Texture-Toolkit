@@ -91,6 +91,8 @@ namespace TextureToolkit
         ImFont *body = font_body();
         const ImVec2 title_sz = strong->CalcTextSizeA(kSizeBody + 1.0f, FLT_MAX, 0.0f, title);
         const ImVec2 ver_sz = body->CalcTextSizeA(kSizeSmall, FLT_MAX, 0.0f, version);
+        const char *credit = "by BadassBaboon";
+        const ImVec2 credit_sz = body->CalcTextSizeA(kSizeSmall, FLT_MAX, 0.0f, credit);
         const ImVec2 press_sz = body->CalcTextSizeA(kSizeBody, FLT_MAX, 0.0f, "Press");
         const ImVec2 key_sz = strong->CalcTextSizeA(kSizeSmall, FLT_MAX, 0.0f, key.c_str());
         const ImVec2 open_sz = body->CalcTextSizeA(kSizeBody, FLT_MAX, 0.0f, "to open the panel");
@@ -98,7 +100,7 @@ namespace TextureToolkit
 
         const float icon = 40.0f, pad = 16.0f, gap = 14.0f;
         const float line2_w = press_sz.x + 6.0f + (key_sz.x + 16.0f) + 6.0f + open_sz.x;
-        const float text_w = (std::max)({ title_sz.x + 8.0f + ver_sz.x, line2_w, state_sz.x });
+        const float text_w = (std::max)({ title_sz.x + 8.0f + ver_sz.x + 8.0f + credit_sz.x, line2_w, state_sz.x });
         const float w = pad + icon + gap + text_w + pad + 4.0f;
         const float h = 84.0f;
 
@@ -121,6 +123,7 @@ namespace TextureToolkit
         float y = a.y + 13.0f;
         dl->AddText(strong, kSizeBody + 1.0f, ImVec2(x, y), u32(fade(p.text)), title);
         dl->AddText(body, kSizeSmall, ImVec2(x + title_sz.x + 8.0f, y + 2.0f), u32(fade(p.text_muted)), version);
+        dl->AddText(body, kSizeSmall, ImVec2(x + title_sz.x + 8.0f + ver_sz.x + 8.0f, y + 2.0f), u32(fade(p.text_faint)), credit);
 
         y += title_sz.y + 4.0f;
         dl->AddText(body, kSizeBody, ImVec2(x, y), u32(fade(p.text_muted)), "Press");

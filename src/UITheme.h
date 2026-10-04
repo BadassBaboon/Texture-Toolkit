@@ -36,6 +36,7 @@ namespace TextureToolkit::UI
     enum class Icon
     {
         Grid, Folder, Gear, Pulse, Search, Copy, Download, Refresh, Camera, Close, Layers, Info,
+        ChevronUp, ChevronDown,
     };
     void draw_icon(ImDrawList *dl, Icon icon, ImVec2 center, float size, ImU32 col);
 
@@ -46,6 +47,10 @@ namespace TextureToolkit::UI
     void EndCard();
 
     bool ToggleSwitch(const char *id, bool *v);
+    ImVec2 ToggleSwitchSize();
+
+    // Screen-space right edge of the current card's content (or of the window's when outside one).
+    float CardRightEdge();
 
     // A labelled switch spanning the row, with an optional second line explaining it.
     bool ToggleRow(const char *label, const char *subtext, bool *v, const char *tooltip = nullptr);

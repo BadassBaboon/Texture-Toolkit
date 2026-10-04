@@ -13,6 +13,13 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
 ## [Unreleased]
 
 ### Added
+- **Texture mods.** Every folder in `TT` other than `dump` and `inject` is loaded as a mod of its
+  own, recursively, so a downloaded mod no longer has to be merged into `inject`. The Mod files page
+  lists each one with a switch and up and down buttons for the load order: where two ship the same
+  texture, the higher one wins. `TT/inject` is part of that order and starts at the top. An optional
+  `mod.ini` gives a mod its name, author, version, description, and whether it is on by default; the
+  panel's choices are kept in `TextureToolkit.ini` under `[Mods]` and `[ModEnabled]` and win over
+  that default. Builds on the `AdditionalSearchPath` overlay folders in toptensoftware's fork.
 - **"Log this frame" in the panel.** Writes every texture the game draws with in the next frame to
   the log, each with its hash, size, format, usage and pool. The ordinary per-texture logging is
   capped at a handful of textures per session, which suits a log read afterwards and cannot answer
@@ -29,7 +36,13 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
   is. Art the game uploads but never draws with, such as livery pieces composited into a render
   target, is tracked and then filtered straight back out, which reads as the tool failing to see it.
 
+- **A "Join Baboon's Workshop" button** at the foot of the panel's sidebar opens the Texture
+  Toolkit Discord in the browser.
+
 ### Changed
+- The panel and the startup banner credit BadassBaboon again, as before the redesign.
+- The sidebar's status box appears only once there is something to report (a reload, a dump, a
+  refused file); it no longer sits there saying "Ready".
 - **A redesigned panel.** A sidebar splits it into Textures, Mod files, Settings and Diagnostics
   pages, with figures for tracked, injected, not applied and dumped textures, switches in place of
   checkboxes, status shown as coloured labels, and Segoe UI and Consolas in place of the built-in

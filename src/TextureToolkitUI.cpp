@@ -26,7 +26,7 @@ namespace TextureToolkit
     static bool s_force_refresh = true;
 
     bool TextureToolkitUI::s_show_ui = false; // Default hidden; the configured hotkey toggles it
-    static std::string s_status_message = "Ready";
+    static std::string s_status_message; // empty until something has happened worth reporting
     static uint64_t s_selected_texture_hash = 0;
     static char s_filter_buf[64] = "";
 
@@ -35,6 +35,8 @@ namespace TextureToolkit
     // Room kept clear at the top right of every page for the window's close button.
     constexpr float kCloseReserve = 44.0f;
     static Page s_page = Page::Textures;
+
+    static const wchar_t *const kDiscordInvite = L"https://discord.gg/qRdVSkUW6n";
 
     static void SetStatusMessage(const std::string &msg)
     {
@@ -823,6 +825,179 @@ namespace TextureToolkit
         ImGui::EndChild();
     }
 
+    // The inject folder and every texture mod, in load order, each with its switch and the
+    // buttons that move it up or down. Changes are written to TextureToolkit.ini and applied at
+    // once (a rescan, as Reload does).
+    static void DrawModsCard(TextureManager &tm)
+    {
+        BeginCard("mods", "Mods and load order",
+                  "Any folder in TT other than dump and inject is a texture mod. Where two ship the same "
+                  "texture, the one higher in this list wins. An optional mod.ini in the folder gives it a "
+                  "name, author, version and description.");
+
+        const std::vector<TextureManager::ModInfo> mods = tm.get_mods();
+        const ImVec2 sw = ToggleSwitchSize();
+        const float btn = 26.0f;
+        const float gap = 4.0f;
+
+        // Applied after the loop: each one rescans, which replaces the list being drawn.
+        enum class Action { None, Toggle, Up, Down } action = Action::None;
+        std::wstring action_id;
+        bool action_value = false;
+
+        for (size_t i = 0; i < mods.size(); ++i)
+        {
+            const TextureManager::ModInfo &m = mods[i];
+            ImGui::PushID(static_cast<int>(i));
+
+            const float right = CardRightEdge();
+            const float controls_w = btn * 3.0f + gap * 2.0f + 14.0f + (m.is_base ? PillSize("Always on").x : sw.x);
+            const ImVec2 start = ImGui::GetCursorScreenPos();
+            const bool live = m.is_base ? tm.enable_injection : m.enabled;
+            const ImVec4 &fg = live ? pal().text : pal().text_faint;
+
+            if (i != 0)
+            {
+                ImGui::GetWindowDrawList()->AddLine(ImVec2(start.x, start.y - 4.0f), ImVec2(right, start.y - 4.0f), u32(pal().border));
+                ImGui::Dummy(ImVec2(0.0f, 2.0f));
+            }
+            const ImVec2 row = ImGui::GetCursorScreenPos();
+
+            // Left: priority, name, version, author, description, and what it contributes.
+            ImGui::PushTextWrapPos(right - controls_w - 12.0f - ImGui::GetWindowPos().x);
+            ImGui::BeginGroup();
+            {
+                char prio[8];
+                std::snprintf(prio, sizeof(prio), "%zu", i + 1);
+                ImGui::PushFont(font_mono(), kSizeSmall);
+                ImGui::TextColored(pal().text_faint, "%s", prio);
+                ImGui::PopFont();
+                ImGui::SameLine(0.0f, 10.0f);
+
+                ImGui::BeginGroup();
+                ImGui::PushFont(font_strong(), 0.0f);
+                ImGui::TextColored(fg, "%s", m.is_base ? "TT/inject" : m.name.c_str());
+                ImGui::PopFont();
+                if (!m.version.empty())
+                {
+                    ImGui::SameLine();
+                    ImGui::TextColored(pal().text_muted, "v%s", m.version.c_str());
+                }
+                if (!m.author.empty())
+                {
+                    ImGui::SameLine();
+                    ImGui::TextColored(pal().text_muted, "by %s", m.author.c_str());
+                }
+
+                ImGui::PushFont(nullptr, kSizeSmall);
+                if (!m.description.empty())
+                {
+                    ImGui::PushStyleColor(ImGuiCol_Text, live ? pal().text_muted : pal().text_faint);
+                    ImGui::TextWrapped("%s", m.description.c_str());
+                    ImGui::PopStyleColor();
+                }
+
+                std::string detail;
+                if (!live)
+                    detail = m.is_base ? "Off while Replace textures is off" : "Off";
+                else
+                {
+                    detail = std::to_string(m.file_count) + (m.file_count == 1 ? " file" : " files");
+                    if (m.provided < m.file_count)
+                        detail += ", " + std::to_string(m.file_count - m.provided) + " covered by a mod above";
+                }
+                if (!m.is_base)
+                {
+                    // The folder, not the display name, is what the ini and the disk know it by.
+                    char folder[260];
+                    WideCharToMultiByte(CP_UTF8, 0, m.id.c_str(), -1, folder, sizeof(folder), nullptr, nullptr);
+                    detail += std::string("  \xC2\xB7  TT/") + folder;
+                }
+                if (!m.is_base && m.overridden && m.enabled != m.enabled_default)
+                    detail += m.enabled_default ? "  \xC2\xB7  on by default" : "  \xC2\xB7  off by default";
+                ImGui::PushStyleColor(ImGuiCol_Text, pal().text_faint);
+                ImGui::TextWrapped("%s", detail.c_str());
+                ImGui::PopStyleColor();
+                ImGui::PopFont();
+                ImGui::EndGroup();
+            }
+            ImGui::EndGroup();
+            ImGui::PopTextWrapPos();
+            const ImVec2 after = ImGui::GetCursorScreenPos();
+
+            // Right: up, down, open folder, then the switch.
+            float x = right - controls_w;
+            const float y = row.y;
+            ImGui::SetCursorScreenPos(ImVec2(x, y - 4.0f));
+            ImGui::BeginDisabled(i == 0);
+            if (IconButton("##up", Icon::ChevronUp, "Higher priority", btn))
+                action = Action::Up, action_id = m.id;
+            ImGui::EndDisabled();
+            x += btn + gap;
+            ImGui::SetCursorScreenPos(ImVec2(x, y - 4.0f));
+            ImGui::BeginDisabled(i + 1 == mods.size());
+            if (IconButton("##down", Icon::ChevronDown, "Lower priority", btn))
+                action = Action::Down, action_id = m.id;
+            ImGui::EndDisabled();
+            x += btn + gap;
+            ImGui::SetCursorScreenPos(ImVec2(x, y - 4.0f));
+            if (IconButton("##open", Icon::Folder, "Open this folder", btn))
+                OpenDirectory(m.dir);
+            x += btn + 14.0f;
+
+            ImGui::SetCursorScreenPos(ImVec2(x, y + (ImGui::GetTextLineHeight() - sw.y) * 0.5f + 1.0f));
+            if (m.is_base)
+            {
+                Pill(tm.enable_injection ? "Always on" : "Off", tm.enable_injection ? pal().ok : pal().neutral);
+                ImGui::SetItemTooltip("TT/inject is switched with Replace textures above.");
+            }
+            else
+            {
+                bool on = m.enabled;
+                if (ToggleSwitch("##on", &on))
+                    action = Action::Toggle, action_id = m.id, action_value = on;
+                ImGui::SetItemTooltip(m.has_manifest ? (m.enabled_default ? "On by default (mod.ini)" : "Off by default (mod.ini)")
+                                                     : "On by default (no mod.ini)");
+            }
+
+            ImGui::SetCursorScreenPos(after);
+            ImGui::Dummy(ImVec2(0.0f, 6.0f));
+            ImGui::PopID();
+        }
+
+        if (mods.size() <= 1)
+        {
+            ImGui::PushFont(nullptr, kSizeSmall);
+            ImGui::PushStyleColor(ImGuiCol_Text, pal().text_faint);
+            ImGui::TextWrapped("No mods installed. Make a folder in TT next to inject, for example TT/DualShock, put "
+                               "its .dds files in it (subfolders are fine) and press Reload replacements.");
+            ImGui::PopStyleColor();
+            ImGui::PopFont();
+        }
+
+        if (UI::Button("Open TT folder"))
+            OpenDirectory(tm.get_resource_root());
+
+        EndCard();
+
+        if (action != Action::None)
+        {
+            char name[260];
+            WideCharToMultiByte(CP_UTF8, 0, action_id.c_str(), -1, name, sizeof(name), nullptr, nullptr);
+            if (action == Action::Toggle)
+            {
+                tm.set_mod_enabled(action_id, action_value);
+                SetStatusMessage(std::string(action_value ? "Switched on " : "Switched off ") + name + ".");
+            }
+            else
+            {
+                tm.move_mod(action_id, action == Action::Up ? -1 : 1);
+                SetStatusMessage(std::string("Moved ") + name + (action == Action::Up ? " up" : " down") + " the load order.");
+            }
+            s_force_refresh = true;
+        }
+    }
+
     static void DrawModFilesPage(TextureManager &tm)
     {
         PageHeader("Mod files", "Where replacements are read from and dumps are written to.");
@@ -846,7 +1021,7 @@ namespace TextureToolkit
             const float tile_w = (card_avail - gap * 2.0f) / 3.0f;
             char v[32];
             std::snprintf(v, sizeof(v), "%zu", inj.files_found);
-            StatTile("Files found", v, pal().accent, tile_w, "DDS files in TT/inject.");
+            StatTile("Files found", v, pal().accent, tile_w, "Distinct textures with a replacement, across TT/inject and every mod that is on.");
             ImGui::SameLine();
             std::snprintf(v, sizeof(v), "%zu", inj.applied);
             StatTile("Applied", v, pal().ok, tile_w, "Replacements built and bound. This lags \"found\" until each texture is next drawn.");
@@ -861,9 +1036,9 @@ namespace TextureToolkit
             {
                 tm.rescan_injected();
                 s_force_refresh = true;
-                SetStatusMessage("Rescanned TT/inject for DDS replacements.");
+                SetStatusMessage("Rescanned TT/inject and the mod folders for DDS replacements.");
             }
-            ImGui::SetItemTooltip("Rescan TT/inject and reload every replacement.");
+            ImGui::SetItemTooltip("Rescan TT/inject and every mod folder, pick up new mods, and reload every replacement.");
             ImGui::SameLine();
             if (UI::Button("Open inject folder"))
                 OpenDirectory(tm.get_inject_dir());
@@ -875,6 +1050,8 @@ namespace TextureToolkit
             ImGui::PopFont();
         }
         EndCard();
+
+        DrawModsCard(tm);
 
         BeginCard("dump", "Dumps",
                   "Originals saved as .dds with their full mip chain, ready to edit and drop into TT/inject under the same name.");
@@ -1004,10 +1181,11 @@ namespace TextureToolkit
             dl->AddRectFilled(p, ImVec2(p.x + 34.0f, p.y + 34.0f), u32(pal().accent), 9.0f);
             draw_icon(dl, Icon::Layers, ImVec2(p.x + 17.0f, p.y + 17.0f), 18.0f, u32(pal().accent_text));
             dl->AddText(font_strong(), kSizeBody, ImVec2(p.x + 46.0f, p.y + 1.0f), u32(pal().text), "TEXTURE TOOLKIT");
+            dl->AddText(font_body(), kSizeSmall, ImVec2(p.x + 46.0f, p.y + 19.0f), u32(pal().text_muted), "by BadassBaboon");
             char sub[64];
             std::snprintf(sub, sizeof(sub), "v%s  \xC2\xB7  %s", TT_VERSION_STRING, graphics_api_name());
-            dl->AddText(font_body(), kSizeSmall, ImVec2(p.x + 46.0f, p.y + 19.0f), u32(pal().text_muted), sub);
-            ImGui::Dummy(ImVec2(width, 40.0f));
+            dl->AddText(font_body(), kSizeSmall, ImVec2(p.x + 46.0f, p.y + 35.0f), u32(pal().text_faint), sub);
+            ImGui::Dummy(ImVec2(width, 52.0f));
         }
 
         ImGui::Dummy(ImVec2(0.0f, 10.0f));
@@ -1034,24 +1212,40 @@ namespace TextureToolkit
         if (NavItem("##nav_diag", Icon::Pulse, "Diagnostics", s_page == Page::Diagnostics))
             s_page = Page::Diagnostics;
 
-        // Footer: the last thing that happened, and how to get out. The box is sized to its
-        // message, since some (a refused dump, say) run to several lines.
+        // Footer: the last thing that happened (only once something has), the community link,
+        // and how to get out. The status box is sized to its message, since some (a refused dump,
+        // say) run to several lines.
+        const ImGuiStyle &style = ImGui::GetStyle();
         const float text_w = width - 40.0f;
-        const ImVec2 msg_size = font_body()->CalcTextSizeA(kSizeSmall, FLT_MAX, text_w, s_status_message.c_str());
-        const float box_h = (std::max)(40.0f, msg_size.y + 18.0f);
-        const float footer_h = box_h + ImGui::GetStyle().ItemSpacing.y + ImGui::GetTextLineHeight();
-        const float footer_y = height - footer_h - ImGui::GetStyle().WindowPadding.y;
+        const bool has_status = !s_status_message.empty();
+        float box_h = 0.0f;
+        if (has_status)
+        {
+            const ImVec2 msg_size = font_body()->CalcTextSizeA(kSizeSmall, FLT_MAX, text_w, s_status_message.c_str());
+            box_h = (std::max)(40.0f, msg_size.y + 18.0f);
+        }
+        const float discord_h = ImGui::GetFontSize() + 14.0f; // Button() pads the frame 7px top and bottom
+        const float footer_h = (has_status ? box_h + style.ItemSpacing.y : 0.0f) +
+                               discord_h + style.ItemSpacing.y + ImGui::GetTextLineHeight();
+        const float footer_y = height - footer_h - style.WindowPadding.y;
         if (ImGui::GetCursorPosY() < footer_y)
             ImGui::SetCursorPosY(footer_y);
 
-        const ImVec2 f0 = ImGui::GetCursorScreenPos();
-        const ImVec2 f1(f0.x + width, f0.y + box_h);
-        dl->AddRectFilled(f0, f1, u32(pal().surface_raised), 9.0f);
-        dl->AddRect(f0, f1, u32(pal().border), 9.0f, 0, 1.0f);
-        draw_icon(dl, Icon::Info, ImVec2(f0.x + 17.0f, f0.y + 17.0f), 13.0f, u32(pal().accent));
-        dl->AddText(font_body(), kSizeSmall, ImVec2(f0.x + 31.0f, f0.y + 9.0f), u32(pal().text), s_status_message.c_str(),
-                    nullptr, text_w);
-        ImGui::Dummy(ImVec2(width, box_h));
+        if (has_status)
+        {
+            const ImVec2 f0 = ImGui::GetCursorScreenPos();
+            const ImVec2 f1(f0.x + width, f0.y + box_h);
+            dl->AddRectFilled(f0, f1, u32(pal().surface_raised), 9.0f);
+            dl->AddRect(f0, f1, u32(pal().border), 9.0f, 0, 1.0f);
+            draw_icon(dl, Icon::Info, ImVec2(f0.x + 17.0f, f0.y + 17.0f), 13.0f, u32(pal().accent));
+            dl->AddText(font_body(), kSizeSmall, ImVec2(f0.x + 31.0f, f0.y + 9.0f), u32(pal().text), s_status_message.c_str(),
+                        nullptr, text_w);
+            ImGui::Dummy(ImVec2(width, box_h));
+        }
+
+        if (UI::Button("Join Baboon's Workshop", ButtonKind::Secondary, ImVec2(width, 0.0f)))
+            ShellExecuteW(nullptr, L"open", kDiscordInvite, nullptr, nullptr, SW_SHOWNORMAL);
+        ImGui::SetItemTooltip("The Texture Toolkit Discord, for help, mods and feedback.\nOpens in your browser.");
 
         char hint[64];
         std::snprintf(hint, sizeof(hint), "%s hides this panel", hotkey_name(ConfigManager::get().get_config().hotkey).c_str());

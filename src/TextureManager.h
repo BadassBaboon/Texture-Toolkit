@@ -237,6 +237,7 @@ namespace TextureToolkit
         std::atomic<uint64_t> m_highlight_hash{0};
         // Binds of the blink target since the last once-a-second report (Verbose log only).
         mutable std::atomic<uint32_t> m_highlight_binds{0};
+        mutable std::atomic<uint32_t> m_highlight_hidden{0};
         uint64_t m_highlight_logged_hash = 0;
         uint64_t m_highlight_report_ticks = 0;
         bool hidden_by_highlight(uint64_t hash) const;

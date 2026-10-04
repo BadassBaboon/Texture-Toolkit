@@ -563,7 +563,10 @@ namespace TextureToolkit
         if (target == 0 || hash != target || !highlight_selected)
             return false;
         m_highlight_binds.fetch_add(1, std::memory_order_relaxed);
-        return blink_phase_off();
+        const bool off = blink_phase_off();
+        if (off)
+            m_highlight_hidden.fetch_add(1, std::memory_order_relaxed);
+        return off;
     }
 
     bool TextureManager::blink_phase_off()
@@ -599,6 +602,7 @@ namespace TextureToolkit
             m_highlight_logged_hash = target;
             m_highlight_report_ticks = now_ticks;
             m_highlight_binds.store(0, std::memory_order_relaxed);
+            m_highlight_hidden.store(0, std::memory_order_relaxed);
             if (target != 0)
                 Logger::get().debug("[Blink] Now blinking " + format_hash_hex(target) + ".");
             else
@@ -609,9 +613,11 @@ namespace TextureToolkit
             return;
         m_highlight_report_ticks = now_ticks;
         const uint32_t binds = m_highlight_binds.exchange(0, std::memory_order_relaxed);
+        const uint32_t hidden = m_highlight_hidden.exchange(0, std::memory_order_relaxed);
         Logger::get().debug("[Blink] " + format_hash_hex(target) + " was bound " + std::to_string(binds) +
                             " time(s) in the last second" +
-                            (binds == 0 ? "; the game is not drawing it now, so it cannot blink." : "."));
+                            (binds == 0 ? "; the game is not drawing it now, so it cannot blink."
+                                        : ", " + std::to_string(hidden) + " of them hidden."));
     }
 
     bool TextureManager::is_highlight_texture9(IDirect3DBaseTexture9 *texture) const

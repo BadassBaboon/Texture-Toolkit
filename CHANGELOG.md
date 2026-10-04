@@ -55,6 +55,9 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
   entry is always cleaned up (it used to be left behind while a dump was reading back), the
   bookkeeping is shared across threads, and buffers are no longer recorded at all. Ported from
   toptensoftware's fork.
+- **The panel's close button did nothing on the Mod files, Settings and Diagnostics pages.** The
+  scrolling page region was a window drawn over it and took the clicks. The button now sits in a
+  window of its own above every page.
 - **A crash or error when quitting a game.** The dump worker thread was still attached when the
   runtime destroyed the texture manager at process exit, which aborts the process. Ported from
   toptensoftware's fork.

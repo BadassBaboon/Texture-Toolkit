@@ -1114,13 +1114,6 @@ namespace TextureToolkit
                           ImGuiWindowFlags_NoBackground);
         ImGui::PopStyleVar();
         {
-            // Close, top right, outside the pages' own layout.
-            const ImVec2 cursor = ImGui::GetCursorPos();
-            ImGui::SetCursorPos(ImVec2(cursor.x + ImGui::GetContentRegionAvail().x - 24.0f, 12.0f));
-            if (IconButton("##close", Icon::Close, "Close the panel", 30.0f))
-                s_show_ui = false;
-            ImGui::SetCursorPos(cursor);
-
             const bool scrolls = (s_page != Page::Textures);
             if (scrolls)
             {
@@ -1145,6 +1138,22 @@ namespace TextureToolkit
             }
         }
         ImGui::EndChild();
+
+        // Close, top right, in a child window of its own submitted after the content. Drawn inside
+        // the content child it sat underneath the scrolling page region, which then took the
+        // mouse: ImGui hands hover to the topmost window first, and the last child is topmost.
+        {
+            const float close_size = 30.0f;
+            ImGui::SetCursorPos(ImVec2(ws.x - close_size - 16.0f, 12.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+            ImGui::BeginChild("##close_host", ImVec2(close_size, close_size), ImGuiChildFlags_None,
+                              ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar |
+                              ImGuiWindowFlags_NoScrollWithMouse);
+            ImGui::PopStyleVar();
+            if (IconButton("##close", Icon::Close, "Close the panel", close_size))
+                s_show_ui = false;
+            ImGui::EndChild();
+        }
 
         ImGui::End();
     }

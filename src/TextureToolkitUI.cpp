@@ -9,6 +9,7 @@
 #include "Logo.h"
 #include "Environment.h"
 #include "PathUtil.h"
+#include "HookTimings.h"
 #include "Version.h"
 #include <windows.h>
 #include <cmath>
@@ -44,8 +45,10 @@ namespace TextureToolkit
     constexpr float kCloseReserve = 44.0f;
     static Page s_page = Page::Textures;
 
-    // Minutes since boot when Texture Toolkit loaded, for the session length in Build Info.
-    static const unsigned long long s_session_start_min = GetTickCount64() / 60000ULL;
+    // When Texture Toolkit loaded, for the session length in Build Info. Real time, not
+    // GetTickCount64, which a game's frame-rate unlocker can hook and speed up (NFS: The Run
+    // reported a 55-minute session after three).
+    static const uint64_t s_session_start = HookTimings::now();
 
     static const wchar_t *const kDiscordInvite = L"https://discord.gg/qRdVSkUW6n";
     static const char *const kDiscordLabel = "Join Discord";
@@ -1359,7 +1362,8 @@ namespace TextureToolkit
         rows.push_back({ "Panel key", hotkey_name(cfg.hotkey) });
         rows.push_back({ "Resource root", path_utf8(tm.get_resource_root()) });
 
-        const unsigned long long mins = GetTickCount64() / 60000ULL - s_session_start_min;
+        const unsigned long long mins = static_cast<unsigned long long>(
+            (HookTimings::now() - s_session_start) / HookTimings::ticks_per_ms() / 60000.0);
         char up[48];
         std::snprintf(up, sizeof(up), "%llu min", mins);
         rows.push_back({ "Session", up });

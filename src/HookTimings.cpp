@@ -27,7 +27,30 @@ namespace TextureToolkit::HookTimings
         };
         Counter g_counters[kSites];
 
-        double ticks_per_ms()
+        // The clock everything here is measured with: the system's precise time, in 100 ns units.
+        // Not QueryPerformanceCounter, which a frame-rate unlocker or speed hack in the game can
+        // hook and run faster than real time (one did in NFS: The Run, about 18x, which made five
+        // minutes of reports out of every sixteen seconds). Windows 7 lacks the precise call, and
+        // falls back to the performance counter.
+        using PreciseTime_t = VOID(WINAPI *)(LPFILETIME);
+
+        // Looked up on first use rather than at static initialisation: other files' statics take
+        // a time stamp while the DLL loads, possibly before this file's would have been set.
+        PreciseTime_t precise_time()
+        {
+            static const PreciseTime_t fn = reinterpret_cast<PreciseTime_t>(
+                GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "GetSystemTimePreciseAsFileTime"));
+            return fn;
+        }
+
+        uint64_t qpc_now()
+        {
+            LARGE_INTEGER t = {};
+            QueryPerformanceCounter(&t);
+            return static_cast<uint64_t>(t.QuadPart);
+        }
+
+        double qpc_per_ms()
         {
             static const double value = []()
             {
@@ -38,12 +61,21 @@ namespace TextureToolkit::HookTimings
             return value;
         }
 
+        // For noticing, once, that the game's own clock is not running at real time.
+        uint64_t g_window_qpc = 0;
+        bool g_reported_clock = false;
+
         // Frame tracking runs on the render thread only.
         uint64_t g_last_frame = 0;
         uint64_t g_window_start = 0;
         uint64_t g_frames = 0;
         uint64_t g_slow_frames = 0;
         uint64_t g_worst_frame = 0;
+    }
+
+    double ticks_per_ms()
+    {
+        return (precise_time() != nullptr) ? 10000.0 : qpc_per_ms();
     }
 
     bool enabled()
@@ -53,9 +85,13 @@ namespace TextureToolkit::HookTimings
 
     uint64_t now()
     {
-        LARGE_INTEGER t = {};
-        QueryPerformanceCounter(&t);
-        return static_cast<uint64_t>(t.QuadPart);
+        if (const PreciseTime_t fn = precise_time())
+        {
+            FILETIME ft = {};
+            fn(&ft);
+            return (static_cast<uint64_t>(ft.dwHighDateTime) << 32) | ft.dwLowDateTime;
+        }
+        return qpc_now();
     }
 
     void record(Site site, uint64_t start)
@@ -107,11 +143,36 @@ namespace TextureToolkit::HookTimings
         if (g_window_start == 0)
         {
             g_window_start = t;
+            g_window_qpc = qpc_now();
+            return;
+        }
+        // The system clock can be stepped backwards by a time sync; start the window over.
+        if (t < g_window_start)
+        {
+            g_window_start = t;
+            g_window_qpc = qpc_now();
             return;
         }
         const double window_ms = (t - g_window_start) / per_ms;
         if (window_ms < kReportSeconds * 1000.0)
             return;
+
+        // Said once: a game whose performance counter runs fast or slow has something hooking it,
+        // and that explains timing complaints that have nothing to do with us.
+        if (precise_time() != nullptr && !g_reported_clock && g_window_qpc != 0)
+        {
+            const double qpc_ms = (qpc_now() - g_window_qpc) / qpc_per_ms();
+            const double ratio = qpc_ms / window_ms;
+            if (ratio > 1.5 || ratio < 0.67)
+            {
+                g_reported_clock = true;
+                char note[200];
+                std::snprintf(note, sizeof(note),
+                              "[Timing] This game's QueryPerformanceCounter is running at %.1fx real time. Something in "
+                              "the game hooks its timers, usually a frame-rate unlocker or speed fix.", ratio);
+                Logger::get().info(note);
+            }
+        }
 
         char line[160];
         std::snprintf(line, sizeof(line), "[Timing] %.1fs: %llu frames, %llu over %.0f ms, worst %.1f ms",
@@ -136,6 +197,7 @@ namespace TextureToolkit::HookTimings
         Logger::get().debug(report);
 
         g_window_start = t;
+        g_window_qpc = qpc_now();
         g_frames = 0;
         g_slow_frames = 0;
         g_worst_frame = 0;

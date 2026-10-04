@@ -20,7 +20,8 @@ namespace TextureToolkit::HookTimings
     };
 
     bool enabled();
-    uint64_t now();
+    uint64_t now();           // real time, immune to a game hooking its own timers
+    double ticks_per_ms();    // units of now()
     void record(Site site, uint64_t start);
 
     // Call once per presented frame, from Present. Tracks frame times, and every few seconds

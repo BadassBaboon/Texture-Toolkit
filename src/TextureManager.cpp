@@ -2123,7 +2123,9 @@ namespace TextureToolkit
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         InjectionStats st;
-        st.files_found = m_injected_files.size();
+        // Both namings: Special K-named files used to be left out, so a folder of nothing else
+        // read as "0 found".
+        st.files_found = m_injected_files.size() + m_sk_injected_files.size();
         st.applied = m_d3d9_replacements.size() + m_d3d11_replacements.size();
         st.failed = m_failed_injections.size();
         return st;

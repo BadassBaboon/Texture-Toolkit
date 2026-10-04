@@ -65,7 +65,10 @@ them, so every existing mod keeps working.
   and the overlay on each API, how many calls there were and how long Texture Toolkit's own part of
   them took: total, average and worst. Only our work inside a hook is timed, never the game's or the
   driver's call it wraps, so the figures say whether a stutter is ours. With verbose logging off it
-  costs one flag check per call. Suggested by the diagnostics build in Aqvilinus's fork.
+  costs one flag check per call. Measured with the system clock, not the game's: a frame-rate
+  unlocker that hooks the game's timers ran its clock about 18x fast in NFS: The Run, which would
+  otherwise have made nonsense of every figure. When the game's clock is off like that, the log
+  says so once. Suggested by the diagnostics build in Aqvilinus's fork.
 
 ### Changed
 - **A redesigned panel.** A sidebar splits it into Textures, Mod files, Settings and Diagnostics,
@@ -154,6 +157,9 @@ them, so every existing mod keeps working.
   UTF-8 and are opened through the wide Windows API.
 - **An install path longer than 260 characters crashed the game at startup**: copying it into a
   fixed buffer tripped the runtime's overflow check. Paths of any length are read in full.
+- **Mod files and Build Info said "0 found" for a folder of Special K-named files**: the count
+  only included our own naming. Build Info's session length is also measured in real time now, not
+  by the game's clock, which a frame-rate unlocker can speed up.
 - Unloading the `.asi` tore the texture manager down while its hooks could still call into it; the
   hooks are removed first now.
 - **Every switch flipped in the panel rewrote `TextureToolkit.ini` from scratch**, discarding any

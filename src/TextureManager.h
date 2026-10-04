@@ -162,6 +162,7 @@ namespace TextureToolkit
 
     private:
         TextureManager() = default;
+        ~TextureManager();
 
         std::filesystem::path m_game_dir;
         std::filesystem::path m_dump_dir;

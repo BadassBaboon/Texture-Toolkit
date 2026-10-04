@@ -13,6 +13,8 @@
 #include "imgui_impl_dx11.h"
 #include <vector>
 #include <thread>
+#include <mutex>
+#include <unordered_map>
 #include <cstdio>
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -42,6 +44,11 @@ namespace TextureToolkit
         return CallWindowProc(g_orig_wndproc, hWnd, msg, wParam, lParam);
     }
 
+    // `resource` holds a reference for as long as its entry exists (taken in Hooked_Map, dropped
+    // in Hooked_Unmap). The map is keyed on the raw pointer, so without that reference a resource
+    // the game Released while still mapped could be destroyed, its address reused by an unrelated
+    // resource, and that resource's Unmap would match the stale entry and hand a dead pData to
+    // the hasher.
     struct MappedResourceData
     {
         ID3D11Resource *resource = nullptr;
@@ -49,7 +56,10 @@ namespace TextureToolkit
         D3D11_MAPPED_SUBRESOURCE mapped = {};
     };
 
-    static thread_local std::unordered_map<ID3D11Resource *, MappedResourceData> s_mapped_resources;
+    // Shared across threads rather than thread_local: a game may Map on one thread and Unmap on
+    // another, and with a reference held per entry a per-thread map would leak that resource.
+    static std::unordered_map<ID3D11Resource *, MappedResourceData> s_mapped_resources;
+    static std::mutex s_mapped_mutex;
     thread_local bool D3D11Hook::s_inside_injection = false;
     std::atomic<uint64_t> D3D11Hook::s_present_count{0};
 
@@ -756,6 +766,13 @@ namespace TextureToolkit
         // Skip our own staging Map during a dump/injection readback (see dump_resource11).
         if (SUCCEEDED(hr) && !s_inside_injection && Subresource == 0 && pMappedResource != nullptr && pMappedResource->pData != nullptr)
         {
+            // Only 2D textures are ever hashed on Unmap; buffers (constant and dynamic vertex
+            // buffers, mapped many times a frame) are not worth recording.
+            D3D11_RESOURCE_DIMENSION dim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+            pResource->GetType(&dim);
+            if (dim != D3D11_RESOURCE_DIMENSION_TEXTURE2D)
+                return hr;
+
             static int s_logged_maps = 0;
             if (s_logged_maps < 20)
             {
@@ -768,7 +785,20 @@ namespace TextureToolkit
             data.subresource = Subresource;
             data.mapped = *pMappedResource;
 
-            s_mapped_resources[pResource] = data;
+            pResource->AddRef(); // released on the matching Unmap, or when superseded below
+
+            // A resource can be mapped again without its previous mapping ever reaching our Unmap
+            // (abandoned by a Release instead). Replace that entry and drop its reference.
+            ID3D11Resource *superseded = nullptr;
+            {
+                std::lock_guard<std::mutex> lock(s_mapped_mutex);
+                auto existing = s_mapped_resources.find(pResource);
+                if (existing != s_mapped_resources.end())
+                    superseded = existing->second.resource;
+                s_mapped_resources[pResource] = data;
+            }
+            if (superseded != nullptr)
+                superseded->Release();
         }
 
         return hr;
@@ -776,17 +806,29 @@ namespace TextureToolkit
 
     void STDMETHODCALLTYPE D3D11Hook::Hooked_Unmap(ID3D11DeviceContext *context, ID3D11Resource *pResource, UINT Subresource)
     {
-        if (!s_inside_injection && Subresource == 0)
+        // The entry is always removed and its reference dropped, even while s_inside_injection is
+        // set: the guard only decides whether this Unmap is hashed. Our own readback maps are never
+        // recorded (see Hooked_Map), so a recorded entry here belongs to a real game mapping.
+        ID3D11Resource *held = nullptr;
+
+        if (Subresource == 0)
         {
-            auto it = s_mapped_resources.find(pResource);
-            if (it != s_mapped_resources.end())
+            // Taken out under the lock, processed outside it: registering can create textures.
+            MappedResourceData data;
             {
-                MappedResourceData &data = it->second;
+                std::lock_guard<std::mutex> lock(s_mapped_mutex);
+                auto it = s_mapped_resources.find(pResource);
+                if (it != s_mapped_resources.end())
+                {
+                    data = it->second;
+                    s_mapped_resources.erase(it);
+                    held = data.resource;
+                }
+            }
 
-                D3D11_RESOURCE_DIMENSION dim;
-                pResource->GetType(&dim);
-
-                if (dim == D3D11_RESOURCE_DIMENSION_TEXTURE2D)
+            if (held != nullptr)
+            {
+                if (!s_inside_injection && data.mapped.pData != nullptr)
                 {
                     ID3D11Texture2D *tex = static_cast<ID3D11Texture2D *>(pResource);
                     D3D11_TEXTURE2D_DESC desc = {};
@@ -816,11 +858,13 @@ namespace TextureToolkit
                         device->Release();
                     }
                 }
-
-                s_mapped_resources.erase(it);
             }
         }
 
         get().m_orig_unmap(context, pResource, Subresource);
+
+        // Dropped after the real Unmap so the resource is guaranteed alive across it.
+        if (held != nullptr)
+            held->Release();
     }
 }

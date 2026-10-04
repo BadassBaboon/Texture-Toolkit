@@ -472,6 +472,17 @@ namespace TextureToolkit
         return instance;
     }
 
+    // Runs from the CRT's exit-time destructors. After an explicit FreeLibrary, shutdown() has
+    // already joined the dump worker and this does nothing. On process exit DllMain skips
+    // shutdown() (see Main.cpp), so the thread object is still joinable here and ~thread() would
+    // call std::terminate(). The OS has already killed the worker by then, so joining would hang;
+    // detach() just closes the handle.
+    TextureManager::~TextureManager()
+    {
+        if (m_dump_thread.joinable())
+            m_dump_thread.detach();
+    }
+
     void TextureManager::init()
     {
         wchar_t exe_path[MAX_PATH] = L"";

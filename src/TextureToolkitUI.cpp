@@ -355,6 +355,7 @@ namespace TextureToolkit
         cfg.filter_small_textures = tm.filter_small_textures;
         cfg.show_current_frame_only = tm.show_current_frame_only;
         cfg.accept_sk_names = tm.accept_sk_names;
+        cfg.highlight_selected = tm.highlight_selected;
         ConfigManager::get().save();
         s_force_refresh = true;
     }
@@ -426,6 +427,10 @@ namespace TextureToolkit
     // -------------------------------------------------------------------------------------------
     // Inspector
     // -------------------------------------------------------------------------------------------
+    // How the inspector's preview is shown, kept as the selection changes.
+    static bool s_flip_v = false;
+    static bool s_flip_h = false;
+
     static void DrawPreview(TextureManager &tm, const TextureDetails &tex)
     {
         // One preview, chosen by what is available and useful:
@@ -470,8 +475,11 @@ namespace TextureToolkit
             const float scale = (std::min)(aw / static_cast<float>(pw), ah / static_cast<float>(ph));
             const float iw = static_cast<float>(pw) * scale, ih = static_cast<float>(ph) * scale;
             const ImVec2 i0(a.x + (box_w - iw) * 0.5f, a.y + (box_h - ih) * 0.5f);
+            // Flipping swaps the texture coordinates: the preview only, never the texture.
+            const ImVec2 uv0(s_flip_h ? 1.0f : 0.0f, s_flip_v ? 1.0f : 0.0f);
+            const ImVec2 uv1(s_flip_h ? 0.0f : 1.0f, s_flip_v ? 0.0f : 1.0f);
             dl->AddImageRounded(ImTextureRef(static_cast<ImTextureID>(handle)), i0, ImVec2(i0.x + iw, i0.y + ih),
-                                ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, 4.0f);
+                                uv0, uv1, IM_COL32_WHITE, 4.0f);
         }
         else
         {
@@ -499,6 +507,28 @@ namespace TextureToolkit
             const ImVec2 d1(b.x - 10.0f, a.y + 10.0f + ds.y + 6.0f), d0(d1.x - ds.x - 16.0f, a.y + 10.0f);
             dl->AddRectFilled(d0, d1, u32(ImVec4(0.059f, 0.055f, 0.051f, 0.80f)), 999.0f);
             dl->AddText(font_body(), kSizeSmall, ImVec2(d0.x + 8.0f, d0.y + 3.0f), u32(pal().text_muted), dims);
+
+            // Flip chips, bottom left, for art a game stores upside down or mirrored.
+            const ImVec2 after = ImGui::GetCursorScreenPos();
+            float x = a.x + 10.0f;
+            const auto chip = [&](const char *id, const char *label, bool *flag, const char *tip)
+            {
+                const ImVec2 ts = font_strong()->CalcTextSizeA(kSizeSmall, FLT_MAX, 0.0f, label);
+                const ImVec2 c0(x, b.y - 10.0f - ts.y - 6.0f), c1(c0.x + ts.x + 16.0f, b.y - 10.0f);
+                ImGui::SetCursorScreenPos(c0);
+                if (ImGui::InvisibleButton(id, ImVec2(c1.x - c0.x, c1.y - c0.y)))
+                    *flag = !*flag;
+                ImGui::SetItemTooltip("%s", tip);
+                const bool hot = ImGui::IsItemHovered();
+                dl->AddRectFilled(c0, c1, *flag ? u32(pal().accent_fill)
+                                                : u32(ImVec4(0.059f, 0.055f, 0.051f, hot ? 0.95f : 0.80f)), 999.0f);
+                dl->AddText(font_strong(), kSizeSmall, ImVec2(c0.x + 8.0f, c0.y + 3.0f),
+                            u32(*flag ? pal().accent_text : pal().text_muted), label);
+                x = c1.x + 6.0f;
+            };
+            chip("##flip_v", "Flip V", &s_flip_v, "Show the preview upside down. Only the preview; the texture is untouched.");
+            chip("##flip_h", "Flip H", &s_flip_h, "Show the preview mirrored. Only the preview; the texture is untouched.");
+            ImGui::SetCursorScreenPos(after);
         }
     }
 
@@ -534,6 +564,57 @@ namespace TextureToolkit
                 SetStatusMessage("Could not dump " + hash + ". For default-pool textures, turn on Auto-dump (see log).");
         }
         ImGui::SetItemTooltip("Write this texture to TT/dump as a .dds, with its full mip chain.");
+
+        // Only offered when there is a dump to delete, and asked once more: it removes a file.
+        if (!tex.filepath_dumped.empty())
+        {
+            ImGui::SameLine();
+            if (UI::Button("Delete dump", ButtonKind::Ghost))
+                ImGui::OpenPopup("##confirm_delete_dump");
+            ImGui::SetItemTooltip("Delete this texture's .dds from TT/dump.");
+            if (ImGui::BeginPopup("##confirm_delete_dump"))
+            {
+                ImGui::TextUnformatted("Delete this texture's dump from TT/dump?");
+                ImGui::PushFont(nullptr, kSizeSmall);
+                ImGui::TextColored(pal().text_faint, "%s", tex.filepath_dumped.c_str());
+                ImGui::PopFont();
+                ImGui::Dummy(ImVec2(0.0f, 2.0f));
+                if (UI::Button("Delete", ButtonKind::Primary))
+                {
+                    s_force_refresh = true;
+                    SetStatusMessage(tm.delete_dump(tex.hash) ? "Deleted the dump of " + hash + "."
+                                                              : "Could not delete the dump of " + hash + " (see log).");
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::SameLine();
+                if (UI::Button("Cancel"))
+                    ImGui::CloseCurrentPopup();
+                ImGui::EndPopup();
+            }
+        }
+
+        // Blink this texture in the game, to find what it is drawn on. On a line of its own, as
+        // the inspector can be too narrow for it beside the buttons.
+        {
+            const ImVec2 sw = ToggleSwitchSize();
+            const float row_h = ImGui::GetTextLineHeight() + 4.0f;
+            const float y = ImGui::GetCursorPosY();
+            ImGui::SetCursorPosY(y + (row_h - sw.y) * 0.5f);
+            const char *tip = "Make this texture blink on and off in the game while it is selected here,\n"
+                              "so whatever it is drawn on can be found by eye.";
+            if (ToggleSwitch("##blink", &tm.highlight_selected))
+                persist_settings(tm);
+            ImGui::SetItemTooltip("%s", tip);
+            ImGui::SameLine();
+            ImGui::SetCursorPosY(y + (row_h - ImGui::GetTextLineHeight()) * 0.5f);
+            ImGui::TextUnformatted("Blink in game");
+            if (ImGui::IsItemClicked())
+            {
+                tm.highlight_selected = !tm.highlight_selected;
+                persist_settings(tm);
+            }
+            ImGui::SetItemTooltip("%s", tip);
+        }
 
         ImGui::Dummy(ImVec2(0.0f, 6.0f));
         SectionLabel("DETAILS");
@@ -976,8 +1057,9 @@ namespace TextureToolkit
         ImGui::PopStyleVar();
         ImGui::PopStyleColor();
         {
-            // Keep the live-preview capture aimed at the current selection.
+            // Keep the live-preview capture, and the in-game blink, aimed at the current selection.
             tm.set_preview_target(s_selected_texture_hash);
+            tm.set_highlight_target(s_selected_texture_hash);
 
             const TextureDetails *sel = nullptr;
             for (const auto &t : snap.textures)
@@ -1367,7 +1449,8 @@ namespace TextureToolkit
                                              " applied, " + std::to_string(inj.failed) + " failed" });
         rows.push_back({ "Mods", std::to_string(mods) + " installed, " + std::to_string(mods_on) + " on" });
         rows.push_back({ "Texture list", std::string("current scene only ") + on(tm.show_current_frame_only) +
-                                             ", skip under 16 x 16 " + on(tm.filter_small_textures) });
+                                             ", skip under 16 x 16 " + on(tm.filter_small_textures) +
+                                             ", blink selected " + on(tm.highlight_selected) });
         rows.push_back({ "Auto-dump", on(tm.auto_dump) });
         rows.push_back({ "Verbose log", on(cfg.verbose) });
         rows.push_back({ "Panel key", hotkey_name(cfg.hotkey) });
@@ -1586,6 +1669,10 @@ namespace TextureToolkit
     void TextureToolkitUI::draw_ui()
     {
         OSDBanner::get().draw_osd();
+
+        // Only the Textures page aims the in-game blink (it sets it again below); every other
+        // page, and a closed panel, leaves the game drawing normally.
+        TextureManager::get().set_highlight_target(0);
 
         if (!is_visible())
         {

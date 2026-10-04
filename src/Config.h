@@ -51,6 +51,9 @@ namespace TextureToolkit
         // Also accept texture packs named the way Special K names them (CRC-32C of the top mip).
         bool accept_sk_names = true;
 
+        // Blink the texture selected in the panel, in the game, so it can be found by eye.
+        bool highlight_selected = true;
+
         bool show_osd_banner = true;
         float osd_duration_seconds = 6.0f;
 

@@ -8,6 +8,7 @@
 #include "HookManager.h"
 #include "IATHook.h"
 #include "TextureManager.h"
+#include "TextureHash.h"
 #include "TextureToolkitUI.h"
 #include "UITheme.h"
 #include "Config.h"
@@ -937,6 +938,28 @@ namespace TextureToolkit
 
 
 
+    // Special K names a Direct3D 9 texture that D3DX built from a file by the file, not the pixels:
+    // CRC-32C over the bytes handed to D3DXCreateTextureFromFileInMemoryEx, render targets
+    // excepted. To match its packs we take the same checksum here and tag it onto the texture, where
+    // register_loaded_texture finds it. Tagging the texture, rather than passing it along, is what
+    // keeps it through D3DX's own nesting: the FromFile functions read the file and call
+    // FromFileInMemoryEx, and their registration afterwards reads the tag the inner call left.
+    static const GUID TT_D3DX_SOURCE_CRC_GUID =
+        { 0x2f7d4e18, 0x9a63, 0x4c51, { 0xb2, 0x0e, 0x7c, 0x41, 0xd8, 0x93, 0x5a, 0x16 } };
+
+    static void tag_d3dx_source(IDirect3DTexture9 *texture, uint32_t crc)
+    {
+        if (texture != nullptr && crc != 0)
+            texture->SetPrivateData(TT_D3DX_SOURCE_CRC_GUID, &crc, sizeof(crc), 0);
+    }
+
+    static uint32_t d3dx_source_crc(const void *src, UINT size, DWORD usage)
+    {
+        if (src == nullptr || size == 0 || (usage & D3DUSAGE_RENDERTARGET) != 0 || !TextureManager::get().wants_sk_hash())
+            return 0;
+        return compute_crc32c_rows(static_cast<const uint8_t *>(src), size, size, 1);
+    }
+
     // Reads back the top level of a texture that something else has already filled, and registers
     // it exactly as an unlock would. D3DX creates and populates a texture without the game ever
     // touching LockRect, so this is the only moment its pixels are visible to us.
@@ -965,9 +988,13 @@ namespace TextureToolkit
         {
             log_texture_event("D3D9Hook", origin, texture, desc.Width, desc.Height);
             HookTimings::Scope timing(HookTimings::Site::D3D9Upload);
+            uint32_t source_crc = 0;
+            DWORD crc_size = sizeof(source_crc);
+            if (FAILED(texture->GetPrivateData(TT_D3DX_SOURCE_CRC_GUID, &source_crc, &crc_size)) || crc_size != sizeof(source_crc))
+                source_crc = 0;
             TextureManager::get().register_unmap_texture9(
                 get().m_device, texture, rect.pBits, desc.Width, desc.Height, desc.Format,
-                static_cast<UINT>(rect.Pitch));
+                static_cast<UINT>(rect.Pitch), source_crc);
         }
 
         texture->UnlockRect(0);
@@ -975,17 +1002,25 @@ namespace TextureToolkit
 
     HRESULT WINAPI D3D9Hook::Hooked_D3DXCreateTextureFromFileInMemoryEx(IDirect3DDevice9 *device, const void *src, UINT size, UINT w, UINT h, UINT mips, DWORD usage, D3DFORMAT fmt, D3DPOOL pool, DWORD filter, DWORD mipfilter, D3DCOLOR key, void *info, void *palette, IDirect3DTexture9 **ppTexture)
     {
+        const uint32_t crc = s_inside_injection ? 0u : d3dx_source_crc(src, size, usage);
         HRESULT hr = get().m_orig_d3dx_from_memory_ex(device, src, size, w, h, mips, usage, fmt, pool, filter, mipfilter, key, info, palette, ppTexture);
         if (SUCCEEDED(hr) && ppTexture != nullptr && !s_inside_injection)
+        {
+            tag_d3dx_source(*ppTexture, crc);
             register_loaded_texture(*ppTexture, "D3DX FromFileInMemoryEx");
+        }
         return hr;
     }
 
     HRESULT WINAPI D3D9Hook::Hooked_D3DXCreateTextureFromFileInMemory(IDirect3DDevice9 *device, const void *src, UINT size, IDirect3DTexture9 **ppTexture)
     {
+        const uint32_t crc = s_inside_injection ? 0u : d3dx_source_crc(src, size, 0);
         HRESULT hr = get().m_orig_d3dx_from_memory(device, src, size, ppTexture);
         if (SUCCEEDED(hr) && ppTexture != nullptr && !s_inside_injection)
+        {
+            tag_d3dx_source(*ppTexture, crc);
             register_loaded_texture(*ppTexture, "D3DX FromFileInMemory");
+        }
         return hr;
     }
 

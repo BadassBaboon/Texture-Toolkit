@@ -6,6 +6,8 @@
 #include "ScopedFlag.h"
 #include "Logger.h"
 #include "PathUtil.h"
+#include "HookTimings.h"
+#include <cmath>
 #include <windows.h>
 #include <sstream>
 #include <iomanip>
@@ -507,6 +509,7 @@ namespace TextureToolkit
         filter_small_textures = cfg.filter_small_textures;
         show_current_frame_only = cfg.show_current_frame_only;
         accept_sk_names = cfg.accept_sk_names;
+        highlight_selected = cfg.highlight_selected;
 
         std::error_code ec;
         std::filesystem::create_directories(m_dump_dir, ec);
@@ -549,6 +552,19 @@ namespace TextureToolkit
             if (rb.srv11) rb.srv11->Release();
         }
         m_readback_queue.clear();
+    }
+
+    // Special K's "highlight selected texture": binding nothing in the texture's place is legal in
+    // both APIs (the shader samples zero), so the blink cannot fault a draw. Real time, so a game
+    // whose timers are sped up does not strobe it.
+    bool TextureManager::hidden_by_highlight(uint64_t hash) const
+    {
+        const uint64_t target = m_highlight_hash.load(std::memory_order_relaxed);
+        if (target == 0 || hash != target || !highlight_selected)
+            return false;
+        constexpr double kBlinkPeriodMs = 600.0;
+        const double ms = static_cast<double>(HookTimings::now()) / HookTimings::ticks_per_ms();
+        return std::fmod(ms, kBlinkPeriodMs) >= kBlinkPeriodMs * 0.5;
     }
 
     void TextureManager::set_preview_target(uint64_t hash)
@@ -1265,6 +1281,10 @@ namespace TextureToolkit
             }
         }
 
+        // After the bookkeeping above, so a texture blinked out is still tracked and captured.
+        if (hidden_by_highlight(hash))
+            return nullptr;
+
         // Replacements are 2D textures. Never hand a cube or volume texture slot a 2D texture
         // (mirrors the view-dimension guard on the D3D11 side).
         if (!enable_injection || orig->GetType() != D3DRTYPE_TEXTURE)
@@ -1481,7 +1501,8 @@ namespace TextureToolkit
         stats.last_hash = hash;
     }
 
-    void TextureManager::register_unmap_texture9(IDirect3DDevice9 *device, IDirect3DTexture9 *texture, const void *pixel_data, UINT width, UINT height, D3DFORMAT format, UINT pitch)
+    void TextureManager::register_unmap_texture9(IDirect3DDevice9 *device, IDirect3DTexture9 *texture, const void *pixel_data, UINT width, UINT height, D3DFORMAT format, UINT pitch,
+                                                 uint32_t sk_hash_override)
     {
         if (device == nullptr || texture == nullptr || pixel_data == nullptr || width == 0 || height == 0)
             return;
@@ -1508,9 +1529,10 @@ namespace TextureToolkit
             return;
 
         // Only worth a second full pass over the pixels when an SK-named file could actually match.
-        const uint32_t sk_hash = (accept_sk_names && m_have_sk_files.load(std::memory_order_relaxed))
-            ? calculate_d3d9_sk_hash(pixel_data, width, height, format, pitch)
-            : 0u;
+        // A texture D3DX built from a file arrives with Special K's name for it already worked out.
+        const uint32_t sk_hash = !wants_sk_hash() ? 0u
+            : (sk_hash_override != 0) ? sk_hash_override
+            : calculate_d3d9_sk_hash(pixel_data, width, height, format, pitch);
 
         UINT original_levels = texture->GetLevelCount();
 
@@ -1585,8 +1607,7 @@ namespace TextureToolkit
                                    dxgi_format_is_compressed(dxgi_fmt), width, height);
                 dump_texture(hash, width, height, dxgi_fmt, std::move(levels));
                 if (m_tracked_textures[hash].status != TextureStatus::INJECTED)
-                    if (m_tracked_textures[hash].status != TextureStatus::INJECTED)
-                m_tracked_textures[hash].status = TextureStatus::DUMPED;
+                    m_tracked_textures[hash].status = TextureStatus::DUMPED;
             }
         }
     }
@@ -1749,6 +1770,9 @@ namespace TextureToolkit
                     flush_seen_locked();
                 }
             }
+
+            if (hidden_by_highlight(cache.hash))
+                return nullptr;
 
             // enable_injection is read live rather than cached, so the panel's checkbox takes
             // effect immediately instead of waiting for a generation bump.
@@ -2442,6 +2466,46 @@ namespace TextureToolkit
 
         tex->Release();
         return path; // request_dump reports the failure with context
+    }
+
+    bool TextureManager::delete_dump(uint64_t hash)
+    {
+        std::filesystem::path path;
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            auto it = m_tracked_textures.find(hash);
+            if (it != m_tracked_textures.end() && !it->second.filepath_dumped.empty())
+                path = path_from_utf8(it->second.filepath_dumped);
+        }
+        if (path.empty())
+            path = m_dump_dir / (format_hash_hex(hash) + ".dds");
+
+        std::error_code ec;
+        if (!std::filesystem::remove(path, ec) || ec)
+        {
+            Logger::get().warn("[TextureManager] Could not delete dump " + path_utf8(path) +
+                               (ec ? ": " + ec.message() : std::string(": no such file")));
+            return false;
+        }
+
+        std::lock_guard<std::mutex> lock(m_mutex);
+        auto it = m_tracked_textures.find(hash);
+        if (it != m_tracked_textures.end())
+        {
+            it->second.filepath_dumped.clear();
+            if (it->second.status == TextureStatus::DUMPED)
+                it->second.status = TextureStatus::ORIGINAL;
+        }
+        // The panel may be previewing the file that is gone.
+        if (m_file_preview_path == path_utf8(path))
+        {
+            if (m_file_preview_tex9)  { m_file_preview_tex9->Release();  m_file_preview_tex9 = nullptr; }
+            if (m_file_preview_srv11) { m_file_preview_srv11->Release(); m_file_preview_srv11 = nullptr; }
+            m_file_preview_hash = 0;
+            m_file_preview_path.clear();
+        }
+        Logger::get().info("[TextureManager] Deleted dump " + path_utf8(path));
+        return true;
     }
 
     bool TextureManager::request_dump(uint64_t hash)

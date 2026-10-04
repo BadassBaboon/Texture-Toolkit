@@ -149,6 +149,7 @@ namespace TextureToolkit
         m_config.filter_small_textures = GetPrivateProfileIntW(L"TextureToolkit", L"FilterSmallTextures", 1, ini_w) != 0;
         m_config.show_current_frame_only = GetPrivateProfileIntW(L"TextureToolkit", L"ShowCurrentFrameOnly", 1, ini_w) != 0;
         m_config.accept_sk_names = GetPrivateProfileIntW(L"TextureToolkit", L"AcceptSpecialKNames", 1, ini_w) != 0;
+        m_config.highlight_selected = GetPrivateProfileIntW(L"TextureToolkit", L"HighlightSelected", 1, ini_w) != 0;
 
         // OSD
         m_config.show_osd_banner = GetPrivateProfileIntW(L"TextureToolkit", L"ShowOSDBanner", 1, ini_w) != 0;
@@ -192,6 +193,7 @@ namespace TextureToolkit
                            " FilterSmallTextures=" + (m_config.filter_small_textures ? "1" : "0") +
                            " ShowCurrentFrameOnly=" + (m_config.show_current_frame_only ? "1" : "0") +
                            " AcceptSpecialKNames=" + (m_config.accept_sk_names ? "1" : "0") +
+                           " HighlightSelected=" + (m_config.highlight_selected ? "1" : "0") +
                            " ShowOSDBanner=" + (m_config.show_osd_banner ? "1" : "0") +
                            " Verbose=" + (m_config.verbose ? "1" : "0"));
     }
@@ -215,6 +217,7 @@ namespace TextureToolkit
                            " FilterSmallTextures=" + (m_config.filter_small_textures ? "1" : "0") +
                            " ShowCurrentFrameOnly=" + (m_config.show_current_frame_only ? "1" : "0") +
                            " AcceptSpecialKNames=" + (m_config.accept_sk_names ? "1" : "0") +
+                           " HighlightSelected=" + (m_config.highlight_selected ? "1" : "0") +
                            " Verbose=" + (m_config.verbose ? "1" : "0"));
     }
 
@@ -236,6 +239,7 @@ namespace TextureToolkit
         put(L"TextureToolkit", L"FilterSmallTextures", flag(m_config.filter_small_textures));
         put(L"TextureToolkit", L"ShowCurrentFrameOnly", flag(m_config.show_current_frame_only));
         put(L"TextureToolkit", L"AcceptSpecialKNames", flag(m_config.accept_sk_names));
+        put(L"TextureToolkit", L"HighlightSelected", flag(m_config.highlight_selected));
         put(L"TextureToolkit", L"ShowOSDBanner", flag(m_config.show_osd_banner));
         put(L"TextureToolkit", L"Verbose", flag(m_config.verbose));
 
@@ -270,6 +274,8 @@ namespace TextureToolkit
              << "ShowCurrentFrameOnly=" << (m_config.show_current_frame_only ? 1 : 0) << "\n\n"
              << "; Also load texture packs named the way Special K names them (CRC-32C of the top mip)\n"
              << "AcceptSpecialKNames=" << (m_config.accept_sk_names ? 1 : 0) << "\n\n"
+             << "; Blink the texture selected in the panel, in the game, so it can be found by eye\n"
+             << "HighlightSelected=" << (m_config.highlight_selected ? 1 : 0) << "\n\n"
              << "; On-Screen Display (OSD)\n"
              << "ShowOSDBanner=" << (m_config.show_osd_banner ? 1 : 0) << "\n\n"
              << "; Diagnostics: 1 = verbose per-texture debug logging (slow)\n"

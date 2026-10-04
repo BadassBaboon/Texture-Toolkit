@@ -18,6 +18,20 @@ a texture is identified: hashes, file names and the `TT/inject` layout are exact
 them, so every existing mod keeps working.
 
 ### Added
+- **Flip V and Flip H on the inspector's preview**, for art a game stores upside down or mirrored.
+  They change the preview only, never the texture.
+- **Delete dump** in the inspector removes the selected texture's `.dds` from `TT/dump`, after a
+  confirmation, and clears its Dumped status.
+- **Special K's Direct3D 9 packs match textures a game loads through D3DX.** For a texture D3DX
+  builds from a file, Special K's name is a CRC-32C of the file's bytes, not of the pixels, so its
+  packs never matched those textures here. The same checksum is now taken where we already watch
+  D3DX, and only while Special K-named files are present, as with the rest of our Special K
+  matching.
+- **Blink in game.** The texture selected on the Textures page blinks on and off in the game, so
+  the thing it is drawn on can be found by eye instead of by elimination. On by default, switched in
+  the inspector, and saved as `HighlightSelected`. Taken from Special K's "Highlight Selected
+  Texture in Game": the texture is bound as nothing for half of each blink, which both APIs allow,
+  and only while the Textures page is open.
 - **Texture mods.** Every folder in `TT` other than `dump` and `inject` is loaded as a mod of its
   own, subfolders included, so a downloaded mod no longer has to be merged into `inject`. The Mod
   files page lists each one with a switch and up and down buttons for the load order: where two

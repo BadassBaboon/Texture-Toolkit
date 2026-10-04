@@ -90,6 +90,13 @@ namespace TextureToolkit
         bool filter_small_textures = true;
         bool show_current_frame_only = false;
         bool accept_sk_names = true;   // also resolve Special K-named files in inject/
+        bool highlight_selected = true; // blink the panel's selected texture in the game
+
+        // The texture the panel has selected on its Textures page, or 0. While it is set and
+        // highlight_selected is on, every bind of that texture is replaced with nothing for half of
+        // each blink, so whatever it is drawn on flickers in the game and can be found by eye.
+        // Atomic: written by the panel each frame, read by every bind.
+        void set_highlight_target(uint64_t hash) { m_highlight_hash.store(hash, std::memory_order_relaxed); }
 
         // Active Texture Queries
         // hidden_out receives how many tracked textures the scene filter removed. A texture the
@@ -152,7 +159,14 @@ namespace TextureToolkit
 
         // Virtual Replacements for DX9
         IDirect3DBaseTexture9 *get_replacement_texture9(IDirect3DBaseTexture9 *orig);
-        void register_unmap_texture9(IDirect3DDevice9 *device, IDirect3DTexture9 *texture, const void *pixel_data, UINT width, UINT height, D3DFORMAT format, UINT pitch);
+        // `sk_hash_override`, when non-zero, is the Special K name to match this texture by instead of
+        // one computed from its pixels: see D3D9Hook's D3DX hooks.
+        void register_unmap_texture9(IDirect3DDevice9 *device, IDirect3DTexture9 *texture, const void *pixel_data, UINT width, UINT height, D3DFORMAT format, UINT pitch,
+                                     uint32_t sk_hash_override = 0);
+
+        // Whether a Special K hash is worth computing right now: the switch is on and at least one
+        // Special K-named file is loaded. Readable from any thread.
+        bool wants_sk_hash() const { return accept_sk_names && m_have_sk_files.load(std::memory_order_relaxed); }
 
         // Copies our content-hash tag from one D3D9 texture to another. Used when the game
         // copies a tagged SYSTEMMEM texture into the DEFAULT texture it actually renders, so
@@ -179,6 +193,10 @@ namespace TextureToolkit
         // reference when the texture is the current selection, otherwise the tracked handle.
         bool request_dump(uint64_t hash);
 
+        // Removes the texture's file from TT/dump and its Dumped status. False if there was no file
+        // to remove or it could not be deleted; the log says which.
+        bool delete_dump(uint64_t hash);
+
         // Queues a bulk dump. scene_only limits it to textures active this scene, otherwise
         // every tracked texture. Each is written the next time the game draws it (using the
         // live handle, so it is safe against pointer reuse). Returns the number queued.
@@ -201,6 +219,9 @@ namespace TextureToolkit
         // Built from disk and the config by rescan_injected; m_mods is its last result.
         std::vector<ModInfo> discover_mods() const;
         std::vector<ModInfo> m_mods;
+
+        std::atomic<uint64_t> m_highlight_hash{0};
+        bool hidden_by_highlight(uint64_t hash) const;
 
         mutable std::mutex m_mutex;
         uint64_t m_frame_count = 0;

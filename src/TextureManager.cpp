@@ -569,11 +569,14 @@ namespace TextureToolkit
         return off;
     }
 
+    // Whole numbers only. Direct3D 9 drops the x87 FPU to single precision in a 32-bit game unless
+    // the game creates its device with D3DCREATE_FPU_PRESERVE, and most do not; the absolute clock
+    // as a double then has about seven significant digits, the phase never moved, and the texture
+    // stayed hidden for good (Bully). The period is small enough to survive that precision.
     bool TextureManager::blink_phase_off()
     {
-        constexpr double kBlinkPeriodMs = 600.0;
-        const double ms = static_cast<double>(HookTimings::now()) / HookTimings::ticks_per_ms();
-        return std::fmod(ms, kBlinkPeriodMs) >= kBlinkPeriodMs * 0.5;
+        static const uint64_t period = (std::max)(uint64_t(2), static_cast<uint64_t>(600.0 * HookTimings::ticks_per_ms()));
+        return HookTimings::now() % period >= period / 2;
     }
 
     IDirect3DBaseTexture9 *TextureManager::blink_binding9(IDirect3DBaseTexture9 *orig)

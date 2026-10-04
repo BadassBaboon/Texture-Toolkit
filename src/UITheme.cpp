@@ -545,7 +545,18 @@ namespace TextureToolkit::UI
         return pressed;
     }
 
-    bool NavItem(const char *id, Icon icon, const char *label, bool selected, const char *badge)
+    float NavItemMinWidth(const char *label, const char *badge)
+    {
+        // Icon column, the label in its widest (selected) face, then the badge or the dot.
+        float w = 38.0f + font_strong()->CalcTextSizeA(kSizeBody, FLT_MAX, 0.0f, label).x + 12.0f;
+        if (badge != nullptr && badge[0] != '\0')
+            w += font_body()->CalcTextSizeA(kSizeSmall, FLT_MAX, 0.0f, badge).x + 22.0f;
+        else
+            w += 20.0f;
+        return w;
+    }
+
+    bool NavItem(const char *id, Icon icon, const char *label, bool selected, const char *badge, const ImVec4 *badge_color)
     {
         const float width = ImGui::GetContentRegionAvail().x;
         const float height = ImGui::GetFrameHeight() + 10.0f;
@@ -573,9 +584,10 @@ namespace TextureToolkit::UI
             const ImVec2 ts = font_body()->CalcTextSizeA(kSizeSmall, FLT_MAX, 0.0f, badge);
             const ImVec2 b0(p.x + width - ts.x - 22.0f, cy - ts.y * 0.5f - 2.0f);
             const ImVec2 b1(p.x + width - 10.0f, cy + ts.y * 0.5f + 2.0f);
-            dl->AddRectFilled(b0, b1, u32(selected ? with_alpha(kPalette.accent_text, 0.14f) : with_alpha(kPalette.accent, 0.16f)), 999.0f);
+            const ImVec4 &bc = (badge_color != nullptr) ? *badge_color : kPalette.accent;
+            dl->AddRectFilled(b0, b1, u32(selected ? with_alpha(kPalette.accent_text, 0.14f) : with_alpha(bc, 0.16f)), 999.0f);
             dl->AddText(font_body(), kSizeSmall, ImVec2(b0.x + 6.0f, b0.y + 2.0f),
-                        u32(selected ? kPalette.accent_text : kPalette.accent), badge);
+                        u32(selected ? kPalette.accent_text : bc), badge);
         }
         else
         {

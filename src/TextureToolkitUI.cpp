@@ -9,6 +9,7 @@
 #include "Logo.h"
 #include "Version.h"
 #include <windows.h>
+#include <cmath>
 #include <shellapi.h>
 #include <vector>
 #include <string>
@@ -38,6 +39,9 @@ namespace TextureToolkit
     static Page s_page = Page::Textures;
 
     static const wchar_t *const kDiscordInvite = L"https://discord.gg/qRdVSkUW6n";
+    static const char *const kDiscordLabel = "Join Discord";
+    static const char *const kBrandTitle = "TEXTURE TOOLKIT";
+    static const char *const kBrandCredit = "by BadassBaboon";
 
     static void SetStatusMessage(const std::string &msg)
     {
@@ -239,14 +243,17 @@ namespace TextureToolkit
     // -------------------------------------------------------------------------------------------
     // Small layout helpers
     // -------------------------------------------------------------------------------------------
-    static void PageHeader(const char *title, const char *subtitle)
+    // `right_reserve` keeps the subtitle clear of controls drawn at the right of the header.
+    static void PageHeader(const char *title, const char *subtitle, float right_reserve = 0.0f)
     {
         ImGui::PushFont(font_strong(), kSizeTitle);
         ImGui::TextUnformatted(title);
         ImGui::PopFont();
-        ImGui::PushFont(nullptr, kSizeSmall + 0.5f);
+        ImGui::PushFont(nullptr, kSizeSmall);
         ImGui::PushStyleColor(ImGuiCol_Text, pal().text_muted);
-        ImGui::TextUnformatted(subtitle);
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - right_reserve);
+        ImGui::TextWrapped("%s", subtitle);
+        ImGui::PopTextWrapPos();
         ImGui::PopStyleColor();
         ImGui::PopFont();
     }
@@ -474,30 +481,41 @@ namespace TextureToolkit
     {
         Snapshot &snap = snapshot(tm);
 
-        // Header, with the two actions people reach for most on the right.
+        // Header, with dumping on the right: the switch that dumps as textures load, the button
+        // that dumps what is listed now, and the folder they go to.
         {
-            const bool can_capture = D3D9Hook::get().get_device() != nullptr;
-            const float right = buttons_width(can_capture ? std::initializer_list<const char *>{ "Log this frame", "Dump all" }
-                                                          : std::initializer_list<const char *>{ "Dump all" });
+            const ImVec2 sw = ToggleSwitchSize();
+            const float label_w = ImGui::CalcTextSize("Auto-dump").x;
+            const float icon_btn = 30.0f;
+            const float gap = ImGui::GetStyle().ItemSpacing.x;
+            const float right = sw.x + 8.0f + label_w + 18.0f + buttons_width({ "Dump all" }) + gap + icon_btn;
+
             const float start_y = ImGui::GetCursorPosY();
             const float right_edge = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - kCloseReserve;
-            PageHeader("Textures", "Everything the game has uploaded. Select one to inspect, dump or replace it.");
+            PageHeader("Textures", "Everything the game has uploaded. Select one to inspect, dump or replace it.",
+                       right + kCloseReserve + 16.0f);
             const float end_y = ImGui::GetCursorPosY();
 
-            ImGui::SetCursorPos(ImVec2(right_edge - right, start_y + 6.0f));
-            if (can_capture)
+            const float row_y = start_y + 6.0f;
+            const float button_h = ImGui::GetFontSize() + 14.0f;
+            float x = right_edge - right;
+
+            ImGui::SetCursorPos(ImVec2(x, row_y + (button_h - sw.y) * 0.5f));
+            if (ToggleSwitch("##auto_dump", &tm.auto_dump))
+                persist_settings(tm);
+            ImGui::SetItemTooltip("Save every texture to TT/dump as it loads.\nSlows loading, and fills the folder quickly.");
+            x += sw.x + 8.0f;
+            ImGui::SetCursorPos(ImVec2(x, row_y + (button_h - ImGui::GetTextLineHeight()) * 0.5f));
+            ImGui::TextUnformatted("Auto-dump");
+            if (ImGui::IsItemClicked())
             {
-                if (UI::Button("Log this frame"))
-                {
-                    D3D9Hook::request_frame_capture();
-                    SetStatusMessage("Wrote every texture drawn this frame to the log.");
-                }
-                ImGui::SetItemTooltip("Writes every texture the game draws with in the next frame to the log,\n"
-                                      "with its hash, size, format and pool.\n"
-                                      "Point the camera at what you are trying to find, then press this:\n"
-                                      "whatever it is drawn with is in that list.");
-                ImGui::SameLine();
+                tm.auto_dump = !tm.auto_dump;
+                persist_settings(tm);
             }
+            ImGui::SetItemTooltip("Save every texture to TT/dump as it loads.\nSlows loading, and fills the folder quickly.");
+            x += label_w + 18.0f;
+
+            ImGui::SetCursorPos(ImVec2(x, row_y));
             if (UI::Button("Dump all", ButtonKind::Primary))
             {
                 const size_t n = tm.dump_all(tm.show_current_frame_only);
@@ -505,9 +523,14 @@ namespace TextureToolkit
                 SetStatusMessage("Dump all queued " + std::to_string(n) + (tm.show_current_frame_only ? " on-screen" : " tracked") +
                                  " texture(s); each is written the next time it is drawn.");
             }
-            ImGui::SetItemTooltip("Dump every tracked texture, or only the current scene when \"Current scene only\" is on.\n"
-                                  "Each is written the next time it is drawn.");
-            ImGui::SetCursorPosY(end_y);
+            ImGui::SetItemTooltip("Dump every listed texture: only the current scene while \"Current scene only\" is on.\n"
+                                  "Each is written to TT/dump the next time it is drawn.");
+            ImGui::SameLine(0.0f, gap);
+            ImGui::SetCursorPosY(row_y + (button_h - icon_btn) * 0.5f);
+            if (IconButton("##open_dump", Icon::Folder, "Open TT/dump", icon_btn))
+                OpenDirectory(tm.get_dump_dir());
+
+            ImGui::SetCursorPosY((std::max)(end_y, row_y + button_h + 4.0f));
         }
 
         ImGui::Dummy(ImVec2(0.0f, 2.0f));
@@ -542,7 +565,7 @@ namespace TextureToolkit
 
         // Search, the scene filter, and how many textures that filter is hiding.
         {
-            const float search_w = (std::min)(ImGui::GetContentRegionAvail().x * 0.42f, 360.0f);
+            const float search_w = (std::min)(ImGui::GetContentRegionAvail().x * 0.34f, 320.0f);
             const ImVec2 sp = ImGui::GetCursorScreenPos();
             ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(32.0f, 7.0f));
             ImGui::SetNextItemWidth(search_w);
@@ -560,6 +583,28 @@ namespace TextureToolkit
             ImGui::SetCursorPosY(ImGui::GetCursorPosY() - 4.0f);
             ImGui::AlignTextToFramePadding();
             ImGui::TextUnformatted("Current scene only");
+            if (ImGui::IsItemClicked())
+            {
+                tm.show_current_frame_only = !tm.show_current_frame_only;
+                persist_settings(tm);
+            }
+            ImGui::SetItemTooltip("List only textures drawn in the current scene.");
+
+            ImGui::SameLine(0.0f, 18.0f);
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 4.0f);
+            if (ToggleSwitch("##skip_small", &tm.filter_small_textures))
+                persist_settings(tm);
+            ImGui::SetItemTooltip("Ignore textures under 16 x 16: lookup tables and placeholders,\nrarely worth replacing, that crowd the list.");
+            ImGui::SameLine();
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() - 4.0f);
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted("Skip under 16 x 16");
+            if (ImGui::IsItemClicked())
+            {
+                tm.filter_small_textures = !tm.filter_small_textures;
+                persist_settings(tm);
+            }
+            ImGui::SetItemTooltip("Ignore textures under 16 x 16: lookup tables and placeholders,\nrarely worth replacing, that crowd the list.");
 
             // A texture the game uploads but never draws with is tracked and then filtered
             // straight back out, which reads as "the tool cannot see it" when the truth is that
@@ -1001,7 +1046,7 @@ namespace TextureToolkit
 
     static void DrawModFilesPage(TextureManager &tm)
     {
-        PageHeader("Mod files", "Where replacements are read from and dumps are written to.");
+        PageHeader("Mod files", "Replacement textures: your own in TT/inject, and the mods installed next to it.");
         ImGui::Dummy(ImVec2(0.0f, 6.0f));
 
         const TextureManager::InjectionStats inj = tm.get_injection_stats();
@@ -1053,50 +1098,12 @@ namespace TextureToolkit
         EndCard();
 
         DrawModsCard(tm);
-
-        BeginCard("dump", "Dumps",
-                  "Originals saved as .dds with their full mip chain, ready to edit and drop into TT/inject under the same name.");
-        {
-            if (ToggleRow("Auto-dump", "Save every texture to TT/dump as it loads. Slows loading, and fills the folder quickly.", &tm.auto_dump))
-                persist_settings(tm);
-
-            ImGui::Dummy(ImVec2(0.0f, 2.0f));
-            if (UI::Button("Dump all"))
-            {
-                const size_t n = tm.dump_all(tm.show_current_frame_only);
-                s_force_refresh = true;
-                SetStatusMessage("Dump all queued " + std::to_string(n) + (tm.show_current_frame_only ? " on-screen" : " tracked") +
-                                 " texture(s); each is written the next time it is drawn.");
-            }
-            ImGui::SetItemTooltip("Dump every tracked texture, or only the current scene when \"Current scene only\" is on.");
-            ImGui::SameLine();
-            if (UI::Button("Open dump folder"))
-                OpenDirectory(tm.get_dump_dir());
-
-            ImGui::PushFont(font_mono(), kSizeSmall);
-            ImGui::PushStyleColor(ImGuiCol_Text, pal().text_faint);
-            ImGui::TextWrapped("%s", tm.get_dump_dir().string().c_str());
-            ImGui::PopStyleColor();
-            ImGui::PopFont();
-        }
-        EndCard();
     }
 
     static void DrawSettingsPage(TextureManager &tm)
     {
-        PageHeader("Settings", "Saved to TextureToolkit.ini as soon as they change.");
+        PageHeader("Settings", "The overlay and where Texture Toolkit keeps its files. Saved to TextureToolkit.ini as soon as they change.");
         ImGui::Dummy(ImVec2(0.0f, 6.0f));
-
-        BeginCard("list", "Texture list");
-        if (ToggleRow("Current scene only",
-                      "List only textures drawn in the last second or so. Art the game uploads but never draws with stays hidden while this is on.",
-                      &tm.show_current_frame_only))
-            persist_settings(tm);
-        if (ToggleRow("Skip textures under 16 x 16",
-                      "Ignore tiny lookup tables and placeholders. They are rarely worth replacing and crowd the list.",
-                      &tm.filter_small_textures))
-            persist_settings(tm);
-        EndCard();
 
         Configuration &cfg = ConfigManager::get().get_config();
         BeginCard("overlay", "Overlay");
@@ -1152,40 +1159,75 @@ namespace TextureToolkit
         }
         EndCard();
 
-        const Configuration &cfg = ConfigManager::get().get_config();
+        Configuration &cfg = ConfigManager::get().get_config();
+        BeginCard("logging", "Log", "TextureToolkit.log sits next to the .asi. For a bug report, switch on verbose logging, "
+                                    "reproduce the problem, and send the log.");
+        if (ToggleRow("Verbose logging",
+                      "Write a line for every texture and hook call. Takes effect at once; leave it off for normal "
+                      "play, since it slows the game.",
+                      &cfg.verbose))
+        {
+            Logger::get().set_min_level(cfg.verbose ? LogLevel::Debug : LogLevel::Info);
+            ConfigManager::get().save();
+            SetStatusMessage(cfg.verbose ? "Verbose logging on." : "Verbose logging off.");
+        }
+        EndCard();
+
         BeginCard("build", "This build");
         KeyValue("Version", TT_VERSION_STRING);
         KeyValue("Architecture", sizeof(void *) == 8 ? "x64" : "x86");
         KeyValue("Built", __DATE__ "  " __TIME__);
         KeyValue("Graphics API", graphics_api_name());
-        KeyValue("Verbose log", cfg.verbose ? "On" : "Off", false, cfg.verbose ? &pal().warn : nullptr);
-        ImGui::PushFont(nullptr, kSizeSmall);
-        ImGui::PushStyleColor(ImGuiCol_Text, pal().text_faint);
-        ImGui::TextWrapped("TextureToolkit.log sits next to the .asi. For a bug report, set Verbose=1 in TextureToolkit.ini, "
-                           "reproduce the problem, and send the log.");
-        ImGui::PopStyleColor();
-        ImGui::PopFont();
         EndCard();
     }
 
     // -------------------------------------------------------------------------------------------
     // Window
     // -------------------------------------------------------------------------------------------
+    static std::string brand_version_line()
+    {
+        return std::string("v") + TT_VERSION_STRING + "  \xC2\xB7  " + graphics_api_name();
+    }
+
+    // As narrow as the sidebar's own contents allow, at the sizes they are drawn at: nothing in it
+    // is shrunk or clipped to fit. Sized for the widest the badges get in practice (a five-digit
+    // texture count, a three-digit failure count) so the panel does not shift as they change.
+    static constexpr float kSidebarPad = 16.0f;
+    static float sidebar_width()
+    {
+        float w = 0.0f;
+        w = (std::max)(w, font_strong()->CalcTextSizeA(kSizeBody, FLT_MAX, 0.0f, kBrandTitle).x);
+        w = (std::max)(w, font_body()->CalcTextSizeA(kSizeSmall, FLT_MAX, 0.0f, kBrandCredit).x);
+        w = (std::max)(w, font_body()->CalcTextSizeA(kSizeSmall, FLT_MAX, 0.0f, brand_version_line().c_str()).x);
+        w = (std::max)(w, NavItemMinWidth("Textures", "88888"));
+        w = (std::max)(w, NavItemMinWidth("Mod files", "888"));
+        w = (std::max)(w, NavItemMinWidth("Settings", nullptr));
+        w = (std::max)(w, NavItemMinWidth("Diagnostics", nullptr));
+        w = (std::max)(w, font_strong()->CalcTextSizeA(kSizeBody, FLT_MAX, 0.0f, kDiscordLabel).x + 28.0f);
+        const std::string hint = hotkey_name(ConfigManager::get().get_config().hotkey) + " hides this panel";
+        w = (std::max)(w, font_body()->CalcTextSizeA(kSizeSmall, FLT_MAX, 0.0f, hint.c_str()).x);
+        return std::ceil(w + kSidebarPad * 2.0f);
+    }
+
     static void DrawSidebar(TextureManager &tm, float width, float height)
     {
         Snapshot &snap = snapshot(tm);
         ImDrawList *dl = ImGui::GetWindowDrawList();
 
-        // Brand.
+        // Brand: the logo over the name, credit and version, stacked so the sidebar is as narrow
+        // as its navigation rather than as wide as the logo and the name side by side.
         {
             const ImVec2 p = ImGui::GetCursorScreenPos();
-            Logo::draw(dl, ImVec2(p.x, p.y + 3.0f), 40.0f);
-            dl->AddText(font_strong(), kSizeBody, ImVec2(p.x + 50.0f, p.y + 1.0f), u32(pal().text), "TEXTURE TOOLKIT");
-            dl->AddText(font_body(), kSizeSmall, ImVec2(p.x + 50.0f, p.y + 19.0f), u32(pal().text_muted), "by BadassBaboon");
-            char sub[64];
-            std::snprintf(sub, sizeof(sub), "v%s  \xC2\xB7  %s", TT_VERSION_STRING, graphics_api_name());
-            dl->AddText(font_body(), kSizeSmall, ImVec2(p.x + 50.0f, p.y + 35.0f), u32(pal().text_faint), sub);
-            ImGui::Dummy(ImVec2(width, 52.0f));
+            Logo::draw(dl, p, 40.0f);
+            float y = p.y + 40.0f + 10.0f;
+            dl->AddText(font_strong(), kSizeBody, ImVec2(p.x, y), u32(pal().text), kBrandTitle);
+            y += font_strong()->CalcTextSizeA(kSizeBody, FLT_MAX, 0.0f, kBrandTitle).y + 1.0f;
+            dl->AddText(font_body(), kSizeSmall, ImVec2(p.x, y), u32(pal().text_muted), kBrandCredit);
+            y += font_body()->CalcTextSizeA(kSizeSmall, FLT_MAX, 0.0f, kBrandCredit).y;
+            const std::string sub = brand_version_line();
+            dl->AddText(font_body(), kSizeSmall, ImVec2(p.x, y), u32(pal().text_faint), sub.c_str());
+            y += font_body()->CalcTextSizeA(kSizeSmall, FLT_MAX, 0.0f, sub.c_str()).y;
+            ImGui::Dummy(ImVec2(width, y - p.y));
         }
 
         ImGui::Dummy(ImVec2(0.0f, 10.0f));
@@ -1197,12 +1239,15 @@ namespace TextureToolkit
         if (NavItem("##nav_tex", Icon::Grid, "Textures", s_page == Page::Textures, badge))
             s_page = Page::Textures;
 
+        // Failed replacement files, as a red count; the page itself says which and why.
         const TextureManager::InjectionStats inj = tm.get_injection_stats();
         char mod_badge[24] = "";
         if (inj.failed > 0)
-            std::snprintf(mod_badge, sizeof(mod_badge), "%zu failed", inj.failed);
-        if (NavItem("##nav_mod", Icon::Folder, "Mod files", s_page == Page::ModFiles, mod_badge[0] ? mod_badge : nullptr))
+            std::snprintf(mod_badge, sizeof(mod_badge), "%zu", inj.failed);
+        if (NavItem("##nav_mod", Icon::Folder, "Mod files", s_page == Page::ModFiles, mod_badge[0] ? mod_badge : nullptr, &pal().bad))
             s_page = Page::ModFiles;
+        if (inj.failed > 0)
+            ImGui::SetItemTooltip("%zu replacement file(s) could not be loaded.", inj.failed);
 
         ImGui::Dummy(ImVec2(0.0f, 8.0f));
         SectionLabel("SETUP");
@@ -1243,9 +1288,9 @@ namespace TextureToolkit
             ImGui::Dummy(ImVec2(width, box_h));
         }
 
-        if (UI::Button("Join Baboon's Workshop", ButtonKind::Secondary, ImVec2(width, 0.0f)))
+        if (UI::Button(kDiscordLabel, ButtonKind::Secondary, ImVec2(width, 0.0f)))
             ShellExecuteW(nullptr, L"open", kDiscordInvite, nullptr, nullptr, SW_SHOWNORMAL);
-        ImGui::SetItemTooltip("The Texture Toolkit Discord, for help, mods and feedback.\nOpens in your browser.");
+        ImGui::SetItemTooltip("Join Baboon's Workshop");
 
         char hint[64];
         std::snprintf(hint, sizeof(hint), "%s hides this panel", hotkey_name(ConfigManager::get().get_config().hotkey).c_str());
@@ -1286,7 +1331,7 @@ namespace TextureToolkit
 
         const ImVec2 wp = ImGui::GetWindowPos();
         const ImVec2 ws = ImGui::GetWindowSize();
-        const float sidebar_w = 228.0f;
+        const float sidebar_w = sidebar_width();
 
         // Sidebar ground, darker than the content, joined to the window's rounded left corners.
         ImDrawList *dl = ImGui::GetWindowDrawList();
@@ -1294,10 +1339,10 @@ namespace TextureToolkit
                           ImGui::GetStyle().WindowRounding, ImDrawFlags_RoundCornersLeft);
         dl->AddLine(ImVec2(wp.x + sidebar_w, wp.y), ImVec2(wp.x + sidebar_w, wp.y + ws.y), u32(pal().border));
 
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16.0f, 18.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(kSidebarPad, 18.0f));
         ImGui::BeginChild("##sidebar", ImVec2(sidebar_w, ws.y), ImGuiChildFlags_AlwaysUseWindowPadding,
                           ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground);
-        DrawSidebar(tm, sidebar_w - 32.0f, ws.y);
+        DrawSidebar(tm, sidebar_w - kSidebarPad * 2.0f, ws.y);
         ImGui::EndChild();
         ImGui::PopStyleVar();
 

@@ -17,10 +17,12 @@ namespace TextureToolkit::UI
     ImFont *font_mono();
 
     // Sizes, in unscaled pixels, for PushFont(font, size).
-    constexpr float kSizeBody = 15.0f;
-    constexpr float kSizeSmall = 13.0f;
-    constexpr float kSizeTitle = 21.0f;
-    constexpr float kSizeStat = 22.0f;
+    // Descriptions are set in kSizeSmall and have to stay readable over a game at 1440p and up,
+    // which 13px Segoe UI was not; everything else is scaled with them to keep the proportions.
+    constexpr float kSizeBody = 16.0f;
+    constexpr float kSizeSmall = 14.0f;
+    constexpr float kSizeTitle = 22.0f;
+    constexpr float kSizeStat = 23.0f;
 
     struct Palette
     {
@@ -63,7 +65,12 @@ namespace TextureToolkit::UI
     bool IconButton(const char *id, Icon icon, const char *tooltip, float size = 0.0f);
 
     // Sidebar entry. Returns true when clicked.
-    bool NavItem(const char *id, Icon icon, const char *label, bool selected, const char *badge = nullptr);
+    // `badge_color` defaults to the accent; pass pal().bad for a count of problems.
+    bool NavItem(const char *id, Icon icon, const char *label, bool selected, const char *badge = nullptr,
+                 const ImVec4 *badge_color = nullptr);
+
+    // Width NavItem needs to show `label` and a badge of `badge` without clipping.
+    float NavItemMinWidth(const char *label, const char *badge);
 
     // Small rounded label in a tinted colour, for statuses.
     void Pill(const char *text, const ImVec4 &color);

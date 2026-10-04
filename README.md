@@ -36,11 +36,11 @@ Press `INSERT` (or whatever `HotKey` is set to) to open it. A sidebar switches b
 
 **Textures** lists everything the game has uploaded, with figures across the top for how many are tracked, injected, not yet applied, and dumped, and how much memory they take. Each row shows the hash, size, mip count, format, and status: injected (a replacement is on screen), SK injected (the same, from a file using Special K's naming), pending (an inject file exists and applies the next time the texture is drawn), failed (an inject file was refused; the log says why), dumped, or original. Click a column header to sort. The search box matches hash, dimensions, or format, in either spelling (`BC3` or `BC3_UNORM`). Hover the list and press `[` or `]` to step through it.
 
-When "Current scene only" is on, textures that are tracked but not being drawn are hidden, and the page says how many, with one click to show them.
+Dumping lives here too: **Auto-dump** saves every texture to `TT/dump` as it loads, **Dump all** dumps what the list shows, and the folder button opens `TT/dump`. Beside the search box, **Current scene only** hides textures that are tracked but not being drawn (the page says how many, with one click to show them), and **Skip under 16 x 16** leaves out tiny lookup tables and placeholders.
 
 The inspector beside the list previews the selected texture on a checkerboard, so transparency reads as transparency: the injected replacement, the live original while it is on screen, or the dumped `.dds` read back from disk. Below it are the dimensions, mip count, data size, format, the compressed and sRGB flags, and the D3D11 bind, usage, and misc flags. Copy the hash or dump the texture from here, and drag the gap between the panes to resize them.
 
-**Mod files** shows how many inject files were found, applied, and refused, with Reload and the folder shortcuts. **Settings** holds the toggles, all saved to the ini as they change. **Diagnostics** has "Log this frame", which writes every texture drawn in the next frame to the log, and the details of the build that is running.
+**Mod files** is for replacements only: the switches for replacing textures and accepting Special K names, how many files were found, applied and refused, Reload, and the [texture mods](#texture-mods) with their load order. **Settings** holds the overlay options and the folder locations, saved to the ini as they change. **Diagnostics** has "Log this frame", which writes every texture drawn in the next frame to the log, the verbose logging switch, and the details of the build that is running.
 
 ## Building
 

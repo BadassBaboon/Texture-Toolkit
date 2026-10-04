@@ -40,6 +40,17 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
   Toolkit Discord in the browser.
 
 ### Changed
+- **The panel is reorganised so each control sits with what it acts on.** Auto-dump, Dump all and
+  the dump folder moved from Mod files to the Textures header, and "Skip under 16 x 16" to the
+  Textures toolbar beside "Current scene only"; Mod files is now replacements and mods only.
+  "Log this frame" is on Diagnostics only, and Diagnostics gains a Verbose logging switch that
+  applies at once instead of needing an ini edit and a restart.
+- Text is larger throughout (descriptions from 13 to 14 px, body from 15 to 16) so the smaller
+  lines read comfortably over a game.
+- The sidebar is narrower: the logo sits above the name instead of beside it, and the width is
+  worked out from what the sidebar shows, so nothing in it is shrunk or cut off. The Discord
+  button reads "Join Discord", with "Join Baboon's Workshop" on hover, and a failed-file count on
+  Mod files is a red number.
 - **The Texture Toolkit logo and a palette taken from it.** The brick-and-stone logo replaces the
   drawn badge in the sidebar and on the startup banner; it is compiled into the `.asi`
   (`assets/logo.png`, regenerated into `src/LogoData.h` by `tools/embed_logo.py`), so there is still

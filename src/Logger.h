@@ -3,6 +3,7 @@
 #include <string>
 #include <fstream>
 #include <mutex>
+#include <atomic>
 #include <filesystem>
 #include <memory>
 
@@ -27,10 +28,10 @@ namespace TextureToolkit
         // Messages below this level are dropped. Defaults to Info so the very chatty
         // per-texture/per-hook Debug lines don't flood the log (a real perf drain at
         // thousands of lines/sec). Set to Debug via the INI "Verbose" toggle.
-        void set_min_level(LogLevel level) { m_min_level = level; }
+        void set_min_level(LogLevel level) { m_min_level.store(level, std::memory_order_relaxed); }
 
         // Lets a caller skip building an expensive message that would be dropped anyway.
-        bool debug_enabled() const { return m_min_level <= LogLevel::Debug; }
+        bool debug_enabled() const { return m_min_level.load(std::memory_order_relaxed) <= LogLevel::Debug; }
 
         void debug(const std::string &msg) { log(LogLevel::Debug, msg); }
         void info(const std::string &msg) { log(LogLevel::Info, msg); }
@@ -44,7 +45,8 @@ namespace TextureToolkit
         std::mutex m_mutex;
         std::ofstream m_file;
         bool m_initialized = false;
-        LogLevel m_min_level = LogLevel::Info;
+        // Atomic: the panel can switch it while every thread that logs is reading it.
+        std::atomic<LogLevel> m_min_level{LogLevel::Info};
 
         std::string get_timestamp();
     };

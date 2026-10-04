@@ -7,6 +7,7 @@
 #include "Logger.h"
 #include "UITheme.h"
 #include "Logo.h"
+#include "Environment.h"
 #include "Version.h"
 #include <windows.h>
 #include <cmath>
@@ -31,7 +32,7 @@ namespace TextureToolkit
     // selection-driven injection) instead of waiting for the next snapshot.
     static bool s_force_refresh = true;
 
-    bool TextureToolkitUI::s_show_ui = false; // Default hidden; the configured hotkey toggles it
+    std::atomic<bool> TextureToolkitUI::s_show_ui{false}; // Default hidden; the configured hotkey toggles it
     static std::string s_status_message; // empty until something has happened worth reporting
     static uint64_t s_selected_texture_hash = 0;
     static char s_filter_buf[64] = "";
@@ -78,6 +79,25 @@ namespace TextureToolkit
         ShellExecuteW(nullptr, L"open", dir_path.c_str(), nullptr, nullptr, SW_SHOW);
     }
 
+    // The OS cursor's display count when the panel opened, restored when it closes.
+    static bool s_cursor_pinned = false;
+    static int s_cursor_saved_count = 0;
+
+    void TextureToolkitUI::release_overlay_mouse()
+    {
+        if (!s_cursor_pinned)
+            return;
+        s_cursor_pinned = false;
+        ImGui::GetIO().MouseDrawCursor = false;
+
+        int count = ShowCursor(TRUE);
+        count = ShowCursor(FALSE); // back where it was, now known
+        while (count < s_cursor_saved_count)
+            count = ShowCursor(TRUE);
+        while (count > s_cursor_saved_count)
+            count = ShowCursor(FALSE);
+    }
+
     void TextureToolkitUI::feed_overlay_mouse(HWND hwnd)
     {
         ImGuiIO &io = ImGui::GetIO();
@@ -88,8 +108,15 @@ namespace TextureToolkit
 
         // Pin the OS cursor-display counter at exactly -1 (hidden). A plain
         // ShowCursor(FALSE) every frame would drive the counter unbounded-negative,
-        // making it impossible for the game to re-show its cursor afterwards.
+        // making it impossible for the game to re-show its cursor afterwards. The count the
+        // game had is noted first and put back by release_overlay_mouse when the panel closes;
+        // leaving it at -1 took the cursor away from any game that shows the OS one.
         int cursor_count = ShowCursor(FALSE);
+        if (!s_cursor_pinned)
+        {
+            s_cursor_saved_count = cursor_count + 1;
+            s_cursor_pinned = true;
+        }
         while (cursor_count >= 0)
             cursor_count = ShowCursor(FALSE);
         while (cursor_count < -1)
@@ -1235,61 +1262,6 @@ namespace TextureToolkit
         return "no device yet";
     }
 
-    // Other things hooked into the game, the usual reason a texture never reaches us: overlays,
-    // wrappers, and proxy DLLs sitting in the game's folder in place of the system's.
-    static std::string other_software(const std::wstring &game_dir)
-    {
-        HMODULE modules[1024] = {};
-        DWORD needed = 0;
-        if (!EnumProcessModules(GetCurrentProcess(), modules, sizeof(modules), &needed))
-            return "could not list modules";
-        const size_t count = (std::min)(static_cast<size_t>(needed / sizeof(HMODULE)), std::size(modules));
-
-        HMODULE self = nullptr;
-        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                           reinterpret_cast<LPCWSTR>(&other_software), &self);
-
-        std::vector<std::string> found;
-        const auto add = [&found](const std::string &what)
-        {
-            if (std::find(found.begin(), found.end(), what) == found.end())
-                found.push_back(what);
-        };
-        for (size_t i = 0; i < count; ++i)
-        {
-            if (modules[i] == self)
-                continue;
-            const std::filesystem::path path(module_path(modules[i]));
-            std::wstring name = path.filename().wstring();
-            std::transform(name.begin(), name.end(), name.begin(), ::towlower);
-            const bool in_game_dir = _wcsicmp(path.parent_path().wstring().c_str(), game_dir.c_str()) == 0;
-
-            if (GetProcAddress(modules[i], "ReShadeRegisterAddon") != nullptr)
-                add("ReShade (" + narrow(path.filename().wstring()) + ")");
-            else if (name.find(L"reshade") != std::wstring::npos)
-                add("ReShade add-on");
-            else if (name == L"specialk32.dll" || name == L"specialk64.dll")
-                add("Special K");
-            else if (name.rfind(L"rtsshooks", 0) == 0)
-                add("RivaTuner Statistics Server");
-            else if (name.rfind(L"gameoverlayrenderer", 0) == 0)
-                add("Steam overlay");
-            else if (name.rfind(L"discordhook", 0) == 0)
-                add("Discord overlay");
-            else if (name.rfind(L"graphics-hook", 0) == 0)
-                add("OBS game capture");
-            else if (in_game_dir && (name == L"d3d9.dll" || name == L"d3d8.dll" || name == L"d3d11.dll" ||
-                                     name == L"dxgi.dll" || name == L"dinput8.dll" || name == L"ddraw.dll"))
-                add(narrow(path.filename().wstring()) + " in the game folder");
-        }
-        if (found.empty())
-            return "none detected";
-        std::string out;
-        for (size_t i = 0; i < found.size(); ++i)
-            out += (i ? ", " : "") + found[i];
-        return out;
-    }
-
     struct InfoRow
     {
         std::string key, value;
@@ -1319,7 +1291,7 @@ namespace TextureToolkit
         char res[32];
         std::snprintf(res, sizeof(res), "%d x %d", static_cast<int>(ds.x), static_cast<int>(ds.y));
         rows.push_back({ "Resolution", res });
-        rows.push_back({ "Also hooked in", other_software(exe.parent_path().wstring()) });
+        rows.push_back({ "Also hooked in", describe_other_software() });
 
         const TextureManager::InjectionStats inj = tm.get_injection_stats();
         size_t mods = 0, mods_on = 0;
@@ -1554,7 +1526,7 @@ namespace TextureToolkit
     {
         OSDBanner::get().draw_osd();
 
-        if (!s_show_ui)
+        if (!is_visible())
         {
             // Drop the pinned preview reference while the panel is hidden.
             TextureManager::get().set_preview_target(0);
@@ -1570,10 +1542,13 @@ namespace TextureToolkit
         ImGui::SetNextWindowSizeConstraints(ImVec2(920, 580), ImVec2(FLT_MAX, FLT_MAX));
 
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-        const bool open = ImGui::Begin("Texture Toolkit###TextureToolkit", &s_show_ui,
+        bool keep_open = true;
+        const bool open = ImGui::Begin("Texture Toolkit###TextureToolkit", &keep_open,
                                        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
                                        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
         ImGui::PopStyleVar();
+        if (!keep_open)
+            set_visible(false);
         if (!open)
         {
             ImGui::End();
@@ -1641,7 +1616,7 @@ namespace TextureToolkit
                               ImGuiWindowFlags_NoScrollWithMouse);
             ImGui::PopStyleVar();
             if (IconButton("##close", Icon::Close, "Close the panel", close_size))
-                s_show_ui = false;
+                set_visible(false);
             ImGui::EndChild();
         }
 

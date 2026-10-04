@@ -87,7 +87,7 @@ namespace TextureToolkit
         static BOOL WINAPI Hooked_GetMessageA(LPMSG lpMsg, HWND hWnd, UINT wMsgFilterMin, UINT wMsgFilterMax);
         static BOOL WINAPI Hooked_GetMessageW(LPMSG lpMsg, HWND hWnd, UINT wMsgFilterMin, UINT wMsgFilterMax);
 
-        static bool handle_input_message(LPMSG lpMsg);
+        static bool handle_input_message(LPMSG lpMsg, bool removed, bool ansi);
 
         std::unordered_set<IDirectInput8 *> m_hooked_dinput8_interfaces;
         std::unordered_set<IDirectInputDevice8 *> m_hooked_devices;

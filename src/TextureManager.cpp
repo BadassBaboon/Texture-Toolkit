@@ -5,6 +5,7 @@
 #include "DDSLoader.h"
 #include "ScopedFlag.h"
 #include "Logger.h"
+#include "PathUtil.h"
 #include <windows.h>
 #include <sstream>
 #include <iomanip>
@@ -486,8 +487,7 @@ namespace TextureToolkit
 
     void TextureManager::init()
     {
-        wchar_t exe_path[MAX_PATH] = L"";
-        GetModuleFileNameW(nullptr, exe_path, ARRAYSIZE(exe_path));
+        const std::wstring exe_path = module_file_name(nullptr);
 
         m_game_dir = std::filesystem::path(exe_path).parent_path();
 
@@ -513,8 +513,8 @@ namespace TextureToolkit
         std::filesystem::create_directories(m_inject_dir, ec);
 
         Logger::get().info("[TextureManager] Standalone Texture Toolkit initialized.");
-        Logger::get().info("[TextureManager] Dump directory: " + m_dump_dir.string());
-        Logger::get().info("[TextureManager] Inject directory: " + m_inject_dir.string());
+        Logger::get().info("[TextureManager] Dump directory: " + path_utf8(m_dump_dir));
+        Logger::get().info("[TextureManager] Inject directory: " + path_utf8(m_inject_dir));
 
         rescan_injected();
 
@@ -599,9 +599,15 @@ namespace TextureToolkit
 
     uint64_t TextureManager::get_file_preview_handle(uint64_t hash, const std::string &dds_path, bool is_dx11)
     {
+        // Read outside the lock: it is a filesystem call, and this runs every frame the texture
+        // stays selected.
+        std::error_code mtime_ec;
+        const auto mtime = std::filesystem::last_write_time(path_from_utf8(dds_path), mtime_ec);
+        const long long stamp = mtime_ec ? 0 : static_cast<long long>(mtime.time_since_epoch().count());
+
         std::lock_guard<std::mutex> lock(m_mutex);
 
-        if (hash == m_file_preview_hash)
+        if (hash == m_file_preview_hash && dds_path == m_file_preview_path && stamp == m_file_preview_mtime)
             return m_file_preview_srv11 ? reinterpret_cast<uint64_t>(m_file_preview_srv11)
                                         : reinterpret_cast<uint64_t>(m_file_preview_tex9);
 
@@ -609,6 +615,8 @@ namespace TextureToolkit
         if (m_file_preview_tex9)  { m_file_preview_tex9->Release();  m_file_preview_tex9 = nullptr; }
         if (m_file_preview_srv11) { m_file_preview_srv11->Release(); m_file_preview_srv11 = nullptr; }
         m_file_preview_hash = hash;
+        m_file_preview_path = dds_path;
+        m_file_preview_mtime = stamp;
 
         DDSImage dds;
         if (!load_dds(dds_path, dds) || dds.subresources.empty())
@@ -837,7 +845,8 @@ namespace TextureToolkit
     // files claim resolves the same way every run, with the unprefixed spelling preferred.
     static void scan_replacement_dir(const std::filesystem::path &dir, bool recursive,
                                      std::unordered_map<uint64_t, std::filesystem::path> &found,
-                                     std::unordered_map<uint32_t, std::filesystem::path> &found_sk)
+                                     std::unordered_map<uint32_t, std::filesystem::path> &found_sk,
+                                     std::vector<std::filesystem::path> *ignored)
     {
         std::error_code ec;
         if (!std::filesystem::is_directory(dir, ec) || ec)
@@ -867,6 +876,11 @@ namespace TextureToolkit
         }
         std::sort(files.begin(), files.end());
 
+        const auto all_hex = [](const std::string &v)
+        {
+            return !v.empty() && v.find_first_not_of("0123456789abcdefABCDEF") == std::string::npos;
+        };
+
         for (const std::filesystem::path &file : files)
         {
             std::string stem = wide_to_utf8(file.stem().wstring());
@@ -874,32 +888,10 @@ namespace TextureToolkit
             if (prefixed)
                 stem = stem.substr(2);
 
-            // Special K names a pack <topCRC>.dds or <topCRC>_<fullCRC>.dds, optionally
-            // prefixed "Uncompressed_" and/or suffixed "_TYPELESS". We key on the top-LOD CRC,
-            // which is the part we can reproduce, and ignore the rest of the name.
-            if (stem.size() != 16)
-            {
-                std::string sk = stem;
-                if (sk.rfind("Uncompressed_", 0) == 0)
-                    sk = sk.substr(13);
-                const size_t underscore = sk.find('_');
-                if (underscore != std::string::npos)
-                    sk = sk.substr(0, underscore);
-
-                if (sk.size() == 8 && sk.find_first_not_of("0123456789abcdefABCDEF") == std::string::npos)
-                {
-                    try
-                    {
-                        found_sk.emplace(static_cast<uint32_t>(std::stoul(sk, nullptr, 16)), file);
-                    }
-                    catch (...)
-                    {
-                    }
-                    continue;
-                }
-            }
-
-            try
+            // Ours: exactly sixteen hex digits. Anything else was once handed to stoull, which
+            // reads up to the first non-hex character, so "5D3E2CCEbackup.dds" loaded as hash
+            // 5D3E2CCE and "0.dds" as hash 0.
+            if (stem.size() == 16 && all_hex(stem))
             {
                 const uint64_t hash = std::stoull(stem, nullptr, 16);
                 // Two files naming one hash must resolve the same way every run, not by
@@ -913,11 +905,38 @@ namespace TextureToolkit
                     if (other.rfind(L"0x", 0) == 0 || other.rfind(L"0X", 0) == 0)
                         existing->second = file;
                 }
+                continue;
             }
-            catch (...)
+
+            // Special K: <topCRC>, optionally followed by _<fullCRC> and/or _TYPELESS, optionally
+            // prefixed Compressed_ or Uncompressed_. We key on the top-level CRC, the part we can
+            // reproduce. Anything else after it means the name is not one of these.
+            std::string sk = stem;
+            if (sk.rfind("Uncompressed_", 0) == 0)
+                sk = sk.substr(13);
+            else if (sk.rfind("Compressed_", 0) == 0)
+                sk = sk.substr(11);
+            bool sk_ok = sk.size() >= 8 && all_hex(sk.substr(0, 8));
+            for (size_t pos = 8; sk_ok && pos < sk.size();)
             {
-                // Ignore non-hex filenames
+                if (sk[pos] != '_')
+                {
+                    sk_ok = false;
+                    break;
+                }
+                const size_t next = sk.find('_', pos + 1);
+                const std::string part = sk.substr(pos + 1, (next == std::string::npos ? sk.size() : next) - pos - 1);
+                sk_ok = (part.size() == 8 && all_hex(part)) || _stricmp(part.c_str(), "TYPELESS") == 0;
+                pos = (next == std::string::npos) ? sk.size() : next;
             }
+            if (sk_ok)
+            {
+                found_sk.emplace(static_cast<uint32_t>(std::stoul(sk.substr(0, 8), nullptr, 16)), file);
+                continue;
+            }
+
+            if (ignored != nullptr)
+                ignored->push_back(file);
         }
     }
 
@@ -1039,7 +1058,20 @@ namespace TextureToolkit
                 continue;
             std::unordered_map<uint64_t, std::filesystem::path> dir_found;
             std::unordered_map<uint32_t, std::filesystem::path> dir_found_sk;
-            scan_replacement_dir(m.dir, !m.is_base, dir_found, dir_found_sk);
+            std::vector<std::filesystem::path> ignored;
+            scan_replacement_dir(m.dir, !m.is_base, dir_found, dir_found_sk, &ignored);
+            if (!ignored.empty())
+            {
+                // Said once per scan rather than per file, with a few names to go on.
+                std::string names;
+                for (size_t k = 0; k < ignored.size() && k < 5; ++k)
+                    names += (k ? ", " : "") + wide_to_utf8(ignored[k].filename().wstring());
+                if (ignored.size() > 5)
+                    names += ", ...";
+                Logger::get().warn("[TextureManager] Skipped " + std::to_string(ignored.size()) + " .dds file(s) in " +
+                                   (m.is_base ? std::string("TT/inject") : wide_to_utf8(m.id)) +
+                                   " whose names are not a texture hash (16 hex digits, or a Special K name): " + names);
+            }
             m.file_count = dir_found.size() + dir_found_sk.size();
             for (auto &kv : dir_found)
                 m.provided += found.emplace(kv.first, std::move(kv.second)).second ? 1 : 0;
@@ -1097,6 +1129,12 @@ namespace TextureToolkit
                 line += ", " + std::to_string(m.file_count) + " file(s), " + std::to_string(m.provided) + " used";
             Logger::get().info(line);
         }
+    }
+
+    size_t TextureManager::tracked_count() const
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_tracked_textures.size();
     }
 
     std::vector<TextureManager::ModInfo> TextureManager::get_mods() const
@@ -1550,7 +1588,7 @@ namespace TextureToolkit
         bool created = false;
         {
             DDSImage dds;
-            if (load_dds(inject_path.string(), dds) && !dds.subresources.empty())
+            if (load_dds(path_utf8(inject_path), dds) && !dds.subresources.empty())
             {
                 D3DFORMAT d3d9_target_fmt = dxgi_to_d3d9_format(dds.format);
                 if (d3d9_target_fmt != D3DFMT_UNKNOWN)
@@ -1633,7 +1671,7 @@ namespace TextureToolkit
                                 m_d3d9_replacements[hash] = highres_tex;
 
                                 details.status = TextureStatus::INJECTED;
-                                details.filepath_injected = inject_path.string();
+                                details.filepath_injected = path_utf8(inject_path);
                                 details.replacement_handle = reinterpret_cast<uint64_t>(highres_tex);
                                 details.repl_width = dds.width;
                                 details.repl_height = dds.height;
@@ -1655,12 +1693,12 @@ namespace TextureToolkit
                 }
                 else
                 {
-                    Logger::get().error("[TextureManager] Unsupported DX9 format mapping for injected texture " + inject_path.string() + ", format ID: " + std::to_string(static_cast<uint32_t>(dds.format)));
+                    Logger::get().error("[TextureManager] Unsupported DX9 format mapping for injected texture " + path_utf8(inject_path) + ", format ID: " + std::to_string(static_cast<uint32_t>(dds.format)));
                 }
             }
             else
             {
-                Logger::get().error("[TextureManager] Failed to load injected DDS file " + inject_path.string() +
+                Logger::get().error("[TextureManager] Failed to load injected DDS file " + path_utf8(inject_path) +
                                     (dds.load_error.empty() ? "" : " - " + dds.load_error));
             }
         }
@@ -1955,7 +1993,7 @@ namespace TextureToolkit
         bool created = false;
         {
             DDSImage dds;
-            if (load_dds(inject_path.string(), dds) && !dds.subresources.empty())
+            if (load_dds(path_utf8(inject_path), dds) && !dds.subresources.empty())
             {
                 // Single-level originals stay single-level; mipmapped originals
                 // (or runtime-generated full chains, MipLevels == 0) get a full chain.
@@ -2026,7 +2064,7 @@ namespace TextureToolkit
                             m_bind_generation.fetch_add(1, std::memory_order_relaxed);
 
                             details.status = TextureStatus::INJECTED;
-                            details.filepath_injected = inject_path.string();
+                            details.filepath_injected = path_utf8(inject_path);
                             details.replacement_handle = reinterpret_cast<uint64_t>(highres_srv);
                             details.repl_width = dds.width;
                             details.repl_height = dds.height;
@@ -2043,7 +2081,7 @@ namespace TextureToolkit
             }
             else
             {
-                Logger::get().error("[TextureManager] Failed to load injected DDS file " + inject_path.string() +
+                Logger::get().error("[TextureManager] Failed to load injected DDS file " + path_utf8(inject_path) +
                                     (dds.load_error.empty() ? "" : " - " + dds.load_error));
             }
         }
@@ -2171,9 +2209,9 @@ namespace TextureToolkit
         desc.texture.levels = static_cast<uint16_t>(mip_levels);
         desc.texture.format = fmt;
 
-        if (!save_dds_multi_mip(dds_path.string(), desc, subres, static_cast<uint32_t>(mip_levels), array_size))
+        if (!save_dds_multi_mip(path_utf8(dds_path), desc, subres, static_cast<uint32_t>(mip_levels), array_size))
             return {};
-        return dds_path.string();
+        return path_utf8(dds_path);
     }
 
     void TextureManager::dump_worker_loop()

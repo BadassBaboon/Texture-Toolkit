@@ -52,6 +52,18 @@ them, so every existing mod keeps working.
 - With `Verbose=1`, a bound texture is described as it is bound: dimensions, format, usage and pool,
   and a plain statement when it is a render target that has no file behind it and cannot be
   replaced. This answers "the texture I can see is not in the panel" straight from a log.
+- **The startup report names the likely cause** when a game shows nothing. Twenty seconds in, the
+  log already gave device and frame counts; it now also lists the overlays and wrappers hooked into
+  the game, says which unsupported graphics API is loaded when no Direct3D 9 or 11 device appears
+  (Direct3D 12, Vulkan, DirectX 8 or 10, OpenGL), points at another overlay owning Present when
+  frames never reach us, and catches a new case: frames presented but no texture ever seen, the
+  mark of a wrapper or an upload path we do not watch.
+- **Per-hook timings in the verbose log.** Every five seconds a `[Timing]` line gives the frame
+  count, how many frames took over 20 ms and the worst one, and for texture uploads, texture binds
+  and the overlay on each API, how many calls there were and how long Texture Toolkit's own part of
+  them took: total, average and worst. Only our work inside a hook is timed, never the game's or the
+  driver's call it wraps, so the figures say whether a stutter is ours. With verbose logging off it
+  costs one flag check per call. Suggested by the diagnostics build in Aqvilinus's fork.
 
 ### Changed
 - **A redesigned panel.** A sidebar splits it into Textures, Mod files, Settings and Diagnostics,
@@ -105,6 +117,52 @@ them, so every existing mod keeps working.
   already tracked in the list; they are hidden at once now.
 - A folder path containing a character outside the system code page could throw while the panel
   drew it.
+- **Nothing could be typed into the panel's search box.** Key presses were taken from the game in
+  its message queue, before its own `TranslateMessage` turns them into characters, so no character
+  ever existed. A key press is now translated before it is taken, and the character it produces
+  is handed to the panel in the encoding it actually arrived in, so text outside English is not
+  garbled either. Alt+key no longer makes Windows beep while the panel is open.
+- **Keys and clicks could reach ImGui twice** when a game peeked at its queue without removing the
+  message; they are handed over only when the message is actually taken.
+- **The mouse cursor could stay hidden after the panel closed.** The OS cursor's display count was
+  pinned to hidden while the panel was open and never put back, so a game that shows the Windows
+  cursor had none afterwards. The count it had is restored when the panel closes, and ImGui's
+  answer to `WM_SETCURSOR` now stands on Direct3D 9 as on Direct3D 11, instead of the game
+  replacing it.
+- **A game thread polling the keyboard could read keys typed into the panel.** The exemption that
+  lets our own code read real key state was one flag for the whole process, raised while the panel
+  was built each frame, so any other thread calling `GetAsyncKeyState` in that window read straight
+  through. It is per thread now. Games that read the keyboard on their render thread, which is most
+  of them, were never affected. Found in Aqvilinus's fork, as was the cursor fix.
+- The panel's open/closed state is atomic, since the hotkey changes it on the render thread while
+  the input hooks read it on others.
+- **Special K packs whose files start with `Compressed_` were ignored.** Only the `Uncompressed_`
+  prefix was recognised.
+- **Files whose names only begin with a hash loaded as that hash.** The name was read up to its
+  first non-hex character, so `5D3E2CCEbackup.dds` replaced texture `5D3E2CCE` and `0.dds` claimed
+  hash 0. A name has to be exactly a hash now (16 hex digits, optionally `0x`, or one of Special K's
+  forms), and any `.dds` that is not is listed in the log instead of being skipped silently.
+- **A game installed in a folder whose path has characters outside the Windows code page** (a
+  Cyrillic or Japanese folder name on an English Windows, say) could crash at startup, and
+  replacements, dumps and the panel's layout file under such a path failed. Paths now travel as
+  UTF-8 and are opened through the wide Windows API.
+- **An install path longer than 260 characters crashed the game at startup**: copying it into a
+  fixed buffer tripped the runtime's overflow check. Paths of any length are read in full.
+- Unloading the `.asi` tore the texture manager down while its hooks could still call into it; the
+  hooks are removed first now.
+- **Every switch flipped in the panel rewrote `TextureToolkit.ini` from scratch**, discarding any
+  comment or key a user had added by hand. An existing ini is updated a key at a time now, and
+  `HotKey` and `ResourceRoot`, which the panel never changes, are left exactly as written. A first
+  run still writes the full commented file.
+- **The file preview could stay stale or blank.** It was cached by texture hash alone, so a dump
+  rewritten under the same name, or one still being written when the panel first showed it, kept
+  the old picture for as long as that texture stayed selected. The file's timestamp is part of the
+  key now.
+- **DDS files with a wrong size in their header were refused without a word.** Some old exporters
+  write it incorrectly; the header is the same 124 bytes whatever it claims, so it is read anyway.
+  `DXT2` and `DXT4` (premultiplied DXT3 and DXT5) load too.
+- **A DDS in an unrecognised format was read as RGBA8**, putting garbage on screen; a 16-bit or
+  luminance file did this. It is refused now, and the log says which format it was.
 
 ## [1.1.0] - 2026-08-26
 

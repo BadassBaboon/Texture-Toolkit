@@ -7,6 +7,9 @@
 #include "Config.h"
 #include "OSDBanner.h"
 #include "Logger.h"
+#include "HookTimings.h"
+#include "PathUtil.h"
+#include "ScopedFlag.h"
 #include "Logo.h"
 #include <atomic>
 #include <imgui.h>
@@ -28,9 +31,16 @@ namespace TextureToolkit
     {
         if (TextureToolkitUI::is_visible())
         {
-            g_inside_imgui_render = true;
-            ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);
-            g_inside_imgui_render = false;
+            LRESULT handled = 0;
+            {
+                ScopedFlag reading_real_input(g_inside_imgui_render);
+                handled = ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);
+            }
+
+            // ImGui answers WM_SETCURSOR with its own cursor (none, while it draws the software
+            // one). Passing it on as well let the game put its cursor straight back.
+            if (msg == WM_SETCURSOR && handled != 0)
+                return handled;
 
             if (msg == WM_INPUT)
                 return 0; // Block raw input from game
@@ -351,6 +361,7 @@ namespace TextureToolkit
                         {
                             Logger::get().debug("[D3D11Hook] Hooked_CreateTexture2D: Registering texture!");
                         }
+                        HookTimings::Scope timing(HookTimings::Site::D3D11Create);
                         TextureManager::get().register_unmap_texture11(
                             device,
                             *ppTexture2D,
@@ -398,12 +409,11 @@ namespace TextureToolkit
         ImGui::CreateContext();
         UI::init();
 
-        wchar_t exe_path[MAX_PATH] = L"";
-        GetModuleFileNameW(nullptr, exe_path, ARRAYSIZE(exe_path));
+        const std::wstring exe_path = module_file_name(nullptr);
         std::filesystem::path game_dir = std::filesystem::path(exe_path).parent_path();
         std::filesystem::path imgui_ini = game_dir / ConfigManager::get().get_config().resource_root / "imgui.ini";
 
-        static std::string ini_path_str = imgui_ini.string();
+        static std::string ini_path_str = path_utf8(imgui_ini);
         ImGui::GetIO().IniFilename = ini_path_str.c_str();
 
         ImGui_ImplWin32_Init(m_hwnd);
@@ -448,6 +458,9 @@ namespace TextureToolkit
             // Cursor visibility is handled per-frame by feed_overlay_mouse (software cursor).
         }
         s_key_was_down = key_is_down;
+
+        if (!TextureToolkitUI::is_visible())
+            TextureToolkitUI::release_overlay_mouse();
 
         // Proof-of-life. If the overlay is invisible in game but these lines keep coming, we are
         // drawing into a surface that is not on screen rather than failing to run. Logged on a
@@ -709,7 +722,11 @@ namespace TextureToolkit
 
         s_present_count.fetch_add(1, std::memory_order_relaxed);
         get().m_swapchain = swapchain;
-        get().render_imgui(swapchain);
+        HookTimings::frame();
+        {
+            HookTimings::Scope timing(HookTimings::Site::Overlay);
+            get().render_imgui(swapchain);
+        }
         return get().m_orig_present(swapchain, SyncInterval, Flags);
     }
 
@@ -732,12 +749,15 @@ namespace TextureToolkit
         s_replaced.resize(NumViews);
 
         bool any_replaced = false;
-        for (UINT i = 0; i < NumViews; ++i)
         {
-            ID3D11ShaderResourceView *r = TextureManager::get().get_replacement_srv11(ppShaderResourceViews[i]);
-            s_replaced[i] = r;
-            if (r != ppShaderResourceViews[i])
-                any_replaced = true;
+            HookTimings::Scope timing(HookTimings::Site::D3D11Bind);
+            for (UINT i = 0; i < NumViews; ++i)
+            {
+                ID3D11ShaderResourceView *r = TextureManager::get().get_replacement_srv11(ppShaderResourceViews[i]);
+                s_replaced[i] = r;
+                if (r != ppShaderResourceViews[i])
+                    any_replaced = true;
+            }
         }
 
         original(context, StartSlot, NumViews,
@@ -849,6 +869,7 @@ namespace TextureToolkit
 
                     if (device != nullptr)
                     {
+                        HookTimings::Scope timing(HookTimings::Site::D3D11Unmap);
                         TextureManager::get().register_unmap_texture11(
                             device,
                             pResource,

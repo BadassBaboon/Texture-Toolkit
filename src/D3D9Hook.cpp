@@ -12,6 +12,8 @@
 #include "UITheme.h"
 #include "Config.h"
 #include "Logger.h"
+#include "HookTimings.h"
+#include "PathUtil.h"
 #include "Logo.h"
 #include <atomic>
 #include <imgui.h>
@@ -28,9 +30,16 @@ namespace TextureToolkit
     {
         if (TextureToolkitUI::is_visible())
         {
-            g_inside_imgui_render = true;
-            ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);
-            g_inside_imgui_render = false;
+            LRESULT handled = 0;
+            {
+                ScopedFlag reading_real_input(g_inside_imgui_render);
+                handled = ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);
+            }
+
+            // ImGui answers WM_SETCURSOR with its own cursor (none, while it draws the software
+            // one). Passing it on as well let the game put its cursor straight back.
+            if (msg == WM_SETCURSOR && handled != 0)
+                return handled;
 
             if (msg == WM_INPUT)
                 return 0; // Block raw input from game
@@ -484,12 +493,11 @@ namespace TextureToolkit
         ImGui::CreateContext();
         UI::init();
 
-        wchar_t exe_path[MAX_PATH] = L"";
-        GetModuleFileNameW(nullptr, exe_path, ARRAYSIZE(exe_path));
+        const std::wstring exe_path = module_file_name(nullptr);
         std::filesystem::path game_dir = std::filesystem::path(exe_path).parent_path();
         std::filesystem::path imgui_ini = game_dir / ConfigManager::get().get_config().resource_root / "imgui.ini";
 
-        static std::string ini_path_str = imgui_ini.string();
+        static std::string ini_path_str = path_utf8(imgui_ini);
         ImGui::GetIO().IniFilename = ini_path_str.c_str();
 
         ImGui_ImplWin32_Init(m_hwnd);
@@ -521,6 +529,9 @@ namespace TextureToolkit
             // Cursor visibility is handled per-frame by feed_overlay_mouse (software cursor).
         }
         s_key_was_down = key_is_down;
+
+        if (!TextureToolkitUI::is_visible())
+            TextureToolkitUI::release_overlay_mouse();
 
         TextureManager::get().on_frame();
 
@@ -596,7 +607,11 @@ namespace TextureToolkit
         s_present_count.fetch_add(1, std::memory_order_relaxed);
             s_in_present = true;
             get().m_device = device;
-            get().render_imgui(device);
+            HookTimings::frame();
+            {
+                HookTimings::Scope timing(HookTimings::Site::Overlay);
+                get().render_imgui(device);
+            }
             HRESULT hr = get().m_orig_present(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
             s_in_present = false;
             return hr;
@@ -614,7 +629,11 @@ namespace TextureToolkit
             s_present_count.fetch_add(1, std::memory_order_relaxed);
             s_in_present = true;
             get().m_device = device;
-            get().render_imgui(device);
+            HookTimings::frame();
+            {
+                HookTimings::Scope timing(HookTimings::Site::Overlay);
+                get().render_imgui(device);
+            }
             HRESULT hr = get().m_orig_present_ex(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
             s_in_present = false;
             return hr;
@@ -631,7 +650,11 @@ namespace TextureToolkit
 
             s_present_count.fetch_add(1, std::memory_order_relaxed);
             s_in_present = true;
-            get().render_imgui(get().m_device);
+            HookTimings::frame();
+            {
+                HookTimings::Scope timing(HookTimings::Site::Overlay);
+                get().render_imgui(get().m_device);
+            }
             HRESULT hr = get().m_orig_swapchain_present(swapchain, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
             s_in_present = false;
             return hr;
@@ -834,6 +857,7 @@ namespace TextureToolkit
                 // an enormous row length instead of a refused lock.
                 if (data.rect.Pitch > 0)
                 {
+                    HookTimings::Scope timing(HookTimings::Site::D3D9Upload);
                     TextureManager::get().register_unmap_texture9(
                         get().m_device,
                         texture,
@@ -883,7 +907,11 @@ namespace TextureToolkit
                                 describe_bound_texture(pTexture));
         }
 
-        IDirect3DBaseTexture9 *pReplacement = TextureManager::get().get_replacement_texture9(pTexture);
+        IDirect3DBaseTexture9 *pReplacement = nullptr;
+        {
+            HookTimings::Scope timing(HookTimings::Site::D3D9Bind);
+            pReplacement = TextureManager::get().get_replacement_texture9(pTexture);
+        }
         return get().m_orig_set_texture(device, Stage, pReplacement);
     }
 
@@ -932,6 +960,7 @@ namespace TextureToolkit
         if (rect.pBits != nullptr && rect.Pitch > 0)
         {
             log_texture_event("D3D9Hook", origin, texture, desc.Width, desc.Height);
+            HookTimings::Scope timing(HookTimings::Site::D3D9Upload);
             TextureManager::get().register_unmap_texture9(
                 get().m_device, texture, rect.pBits, desc.Width, desc.Height, desc.Format,
                 static_cast<UINT>(rect.Pitch));
@@ -1202,6 +1231,7 @@ namespace TextureToolkit
                 // an enormous row length instead of a refused lock.
                 if (data.rect.Pitch > 0)
                 {
+                    HookTimings::Scope timing(HookTimings::Site::D3D9Upload);
                     TextureManager::get().register_unmap_texture9(
                         get().m_device,
                         texture,

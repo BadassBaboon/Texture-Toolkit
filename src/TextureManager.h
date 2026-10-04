@@ -130,6 +130,9 @@ namespace TextureToolkit
         };
         std::vector<ModInfo> get_mods() const;
 
+        // How many textures are tracked right now, for the startup watchdog.
+        size_t tracked_count() const;
+
         // Both persist to TextureToolkit.ini and rescan, so the change applies at once.
         void set_mod_enabled(const std::wstring &id, bool enabled);
         void move_mod(const std::wstring &id, int delta); // negative = higher priority
@@ -269,6 +272,11 @@ namespace TextureToolkit
 
         // Dumped-file preview, loaded on demand (see get_file_preview_handle).
         uint64_t m_file_preview_hash = 0;
+        // With the hash, what the cached preview was read from and when that file last changed,
+        // so a dump rewritten under the same name, or one still being written when first viewed,
+        // is read again instead of staying stale or blank for as long as it stays selected.
+        std::string m_file_preview_path;
+        long long m_file_preview_mtime = 0;
         IDirect3DBaseTexture9 *m_file_preview_tex9 = nullptr;
         ID3D11ShaderResourceView *m_file_preview_srv11 = nullptr;
 

@@ -1,5 +1,6 @@
 #include "Config.h"
 #include "Logger.h"
+#include "PathUtil.h"
 #include <fstream>
 #include <sstream>
 #include <cstdio>
@@ -110,8 +111,8 @@ namespace TextureToolkit
             return;
         }
 
-        wchar_t ini_w[MAX_PATH];
-        wcscpy_s(ini_w, m_ini_path.wstring().c_str());
+        const std::wstring ini_path = m_ini_path.wstring();
+        const wchar_t *ini_w = ini_path.c_str();
 
         // Hotkey
         wchar_t hotkey_str[32] = L"";
@@ -179,13 +180,13 @@ namespace TextureToolkit
             }
         }
 
-        Logger::get().info("[ConfigManager] Configuration loaded from " + m_ini_path.string());
+        Logger::get().info("[ConfigManager] Configuration loaded from " + path_utf8(m_ini_path));
 
         // The values, not just the path. Every diagnosis from a user's log has to start by knowing
         // what the settings were: a texture missing from the panel because ShowCurrentFrameOnly is
         // hiding it looks exactly like a texture that was never tracked at all.
         Logger::get().info(std::string("[ConfigManager] HotKey=") + hotkey_name(m_config.hotkey) +
-                           " ResourceRoot=" + m_config.resource_root.string() +
+                           " ResourceRoot=" + path_utf8(m_config.resource_root) +
                            " EnableInjection=" + (m_config.enable_injection ? "1" : "0") +
                            " AutoDump=" + (m_config.auto_dump ? "1" : "0") +
                            " FilterSmallTextures=" + (m_config.filter_small_textures ? "1" : "0") +
@@ -200,6 +201,55 @@ namespace TextureToolkit
         std::error_code ec;
         std::filesystem::create_directories(m_ini_path.parent_path(), ec);
 
+        if (std::filesystem::exists(m_ini_path, ec))
+            save_keys();
+        else
+            write_template();
+
+        // The values on save as well as on load. A user toggling a checkbox mid-session and a user
+        // never touching it produced the same line, so a log could not say which setting was in
+        // force when the thing they were reporting happened.
+        Logger::get().info("[ConfigManager] Configuration saved to " + path_utf8(m_ini_path));
+        Logger::get().info(std::string("[ConfigManager] Now: EnableInjection=") + (m_config.enable_injection ? "1" : "0") +
+                           " AutoDump=" + (m_config.auto_dump ? "1" : "0") +
+                           " FilterSmallTextures=" + (m_config.filter_small_textures ? "1" : "0") +
+                           " ShowCurrentFrameOnly=" + (m_config.show_current_frame_only ? "1" : "0") +
+                           " AcceptSpecialKNames=" + (m_config.accept_sk_names ? "1" : "0") +
+                           " Verbose=" + (m_config.verbose ? "1" : "0"));
+    }
+
+    // An existing ini is updated a key at a time, so whatever else the user wrote in it (comments,
+    // keys this version does not know, their own formatting of HotKey and ResourceRoot, which the
+    // panel never changes) survives. Rewriting the whole file used to throw all of that away on
+    // every switch the panel flipped.
+    void ConfigManager::save_keys()
+    {
+        const std::wstring ini = m_ini_path.wstring();
+        const auto put = [&ini](const wchar_t *section, const std::wstring &key, const std::wstring &value)
+        {
+            WritePrivateProfileStringW(section, key.c_str(), value.c_str(), ini.c_str());
+        };
+        const auto flag = [](bool b) { return std::wstring(b ? L"1" : L"0"); };
+
+        put(L"TextureToolkit", L"EnableInjection", flag(m_config.enable_injection));
+        put(L"TextureToolkit", L"AutoDump", flag(m_config.auto_dump));
+        put(L"TextureToolkit", L"FilterSmallTextures", flag(m_config.filter_small_textures));
+        put(L"TextureToolkit", L"ShowCurrentFrameOnly", flag(m_config.show_current_frame_only));
+        put(L"TextureToolkit", L"AcceptSpecialKNames", flag(m_config.accept_sk_names));
+        put(L"TextureToolkit", L"ShowOSDBanner", flag(m_config.show_osd_banner));
+        put(L"TextureToolkit", L"Verbose", flag(m_config.verbose));
+
+        std::wstring order;
+        for (size_t i = 0; i < m_config.mod_load_order.size(); ++i)
+            order += (i ? L";" : L"") + m_config.mod_load_order[i];
+        put(L"Mods", L"LoadOrder", order);
+        for (const auto &kv : m_config.mod_enabled)
+            put(L"ModEnabled", kv.first, flag(kv.second));
+    }
+
+    // A first run gets every key, with a comment explaining each.
+    void ConfigManager::write_template()
+    {
         std::ofstream file(m_ini_path, std::ios::out | std::ios::trunc);
         if (!file.is_open())
             return;
@@ -212,7 +262,7 @@ namespace TextureToolkit
              << "HotKey=" << ss.str() << "\n\n"
              << "; Root folder for dump/, inject/, and imgui.ini.\n"
              << "; Relative to the game's executable folder, or an absolute path.\n"
-             << "ResourceRoot=" << m_config.resource_root.string() << "\n\n"
+             << "ResourceRoot=" << to_ini_text(m_config.resource_root.wstring()) << "\n\n"
              << "; Feature Toggles\n"
              << "EnableInjection=" << (m_config.enable_injection ? 1 : 0) << "\n"
              << "AutoDump=" << (m_config.auto_dump ? 1 : 0) << "\n"
@@ -233,17 +283,5 @@ namespace TextureToolkit
              << "; <mod folder>=1 or 0 switches a mod on or off, overriding its own mod.ini default.\n";
         for (const auto &kv : m_config.mod_enabled)
             file << to_ini_text(kv.first) << "=" << (kv.second ? 1 : 0) << "\n";
-
-        file.close();
-        // The values on save as well as on load. A user toggling a checkbox mid-session and a user
-        // never touching it produced the same line, so a log could not say which setting was in
-        // force when the thing they were reporting happened.
-        Logger::get().info("[ConfigManager] Configuration saved to " + m_ini_path.string());
-        Logger::get().info(std::string("[ConfigManager] Now: EnableInjection=") + (m_config.enable_injection ? "1" : "0") +
-                           " AutoDump=" + (m_config.auto_dump ? "1" : "0") +
-                           " FilterSmallTextures=" + (m_config.filter_small_textures ? "1" : "0") +
-                           " ShowCurrentFrameOnly=" + (m_config.show_current_frame_only ? "1" : "0") +
-                           " AcceptSpecialKNames=" + (m_config.accept_sk_names ? "1" : "0") +
-                           " Verbose=" + (m_config.verbose ? "1" : "0"));
     }
 }

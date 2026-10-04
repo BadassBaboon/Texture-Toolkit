@@ -9,6 +9,8 @@
 #include <dxgi.h>
 #include "Config.h"
 #include "Logger.h"
+#include "Environment.h"
+#include "PathUtil.h"
 #include "HookManager.h"
 #include "TextureManager.h"
 #include "D3D9Hook.h"
@@ -50,35 +52,56 @@ namespace TextureToolkit
                                " frames_d3d9=" + std::to_string(frames9) + " frames_d3d11=" + std::to_string(frames11) +
                                " overlay=" + std::to_string(overlay ? 1 : 0));
 
+            const size_t tracked = TextureManager::get().tracked_count();
+            Logger::get().info("[Watchdog] Textures tracked: " + std::to_string(tracked) +
+                               ". Also hooked into the game: " + describe_other_software() + ".");
+
+            // Name the likely cause rather than leave the log to stop after "hooks installed".
             if (frames9 == 0 && frames11 == 0)
             {
                 if (!have_d3d9 && !have_d3d11)
-                    Logger::get().warn("[Watchdog] No Direct3D 9 or 11 device was created. Either the game had not "
-                                       "finished starting, or it renders with an API Texture Toolkit does not hook "
-                                       "(DirectX 8/10/12 or Vulkan).");
+                {
+                    const std::string apis = describe_unhooked_apis();
+                    if (!apis.empty())
+                        Logger::get().warn("[Watchdog] No Direct3D 9 or 11 device was created, and the game has " + apis +
+                                           " loaded: it most likely renders with that, which Texture Toolkit does not "
+                                           "hook. (If the game is still on a launcher or loading screen, this can also "
+                                           "just mean it has not started rendering yet.)");
+                    else
+                        Logger::get().warn("[Watchdog] No Direct3D 9 or 11 device was created. Either the game had not "
+                                           "finished starting, or it renders with an API Texture Toolkit does not hook "
+                                           "(DirectX 8/10/12 or Vulkan).");
+                }
                 else
+                {
                     Logger::get().warn("[Watchdog] A device exists but no frame has been presented through our hook. "
-                                       "The game is rendering somewhere we are not on the path (another overlay may "
-                                       "own Present), or it stopped before its first frame.");
+                                       "Most often another overlay loaded after us and took over Present (look at "
+                                       "\"Also hooked into the game\" above), or the game stopped before its first frame.");
+                }
             }
             else if (!overlay)
             {
                 Logger::get().warn("[Watchdog] Frames are being presented but the overlay never initialised; the "
                                    "panel will not appear.");
             }
+            else if (tracked == 0)
+            {
+                Logger::get().warn("[Watchdog] Frames are being presented but no texture has been seen. The game "
+                                   "uploads its art some way we do not watch, or through a wrapper (a d3d8-to-d3d9 "
+                                   "converter, DXVK) that sits between it and us. Verbose=1 logs every upload call we "
+                                   "do see.");
+            }
         }).detach();
     }
 
     void initialize_standalone()
     {
-        wchar_t exe_path[MAX_PATH] = L"";
-        GetModuleFileNameW(nullptr, exe_path, ARRAYSIZE(exe_path));
+        const std::wstring exe_path = module_file_name(nullptr);
         std::filesystem::path game_dir = std::filesystem::path(exe_path).parent_path();
 
         // Keep the .ini and .log next to the .asi (usually the plugins/ or scripts/ folder),
         // so they are easy to find and the dump/inject folders can be re-pointed in the .ini.
-        wchar_t module_path[MAX_PATH] = L"";
-        GetModuleFileNameW(g_our_module, module_path, ARRAYSIZE(module_path));
+        const std::wstring module_path = module_file_name(g_our_module);
         std::filesystem::path asi_dir = std::filesystem::path(module_path).parent_path();
         if (asi_dir.empty())
             asi_dir = game_dir;
@@ -91,8 +114,8 @@ namespace TextureToolkit
         Logger::get().info(std::string("[Main] Texture Toolkit v") + TT_VERSION_STRING +
                            " (" + (sizeof(void *) == 8 ? "x64" : "x86") +
                            ", built " __DATE__ " " __TIME__ ") initializing...");
-        Logger::get().info("[Main] Host process: " + std::filesystem::path(exe_path).string());
-        Logger::get().info("[Main] Loaded from:   " + std::filesystem::path(module_path).string());
+        Logger::get().info("[Main] Host process: " + path_utf8(exe_path));
+        Logger::get().info("[Main] Loaded from:   " + path_utf8(module_path));
 
         ConfigManager::get().init(asi_dir);
         Logger::get().set_min_level(ConfigManager::get().get_config().verbose ? LogLevel::Debug : LogLevel::Info);
@@ -112,11 +135,13 @@ namespace TextureToolkit
     void shutdown_standalone()
     {
         Logger::get().info("[Main] Texture Toolkit Standalone shutting down...");
-        TextureManager::get().shutdown();
-        DInput8Hook::get().shutdown();
-        D3D9Hook::get().shutdown();
-        D3D11Hook::get().shutdown();
+        // Detours first, so nothing can call into a subsystem while it is being torn down: the
+        // texture manager used to go before them, with its hooks still live and able to reach it.
         HookManager::get().shutdown();
+        D3D11Hook::get().shutdown();
+        D3D9Hook::get().shutdown();
+        DInput8Hook::get().shutdown();
+        TextureManager::get().shutdown();
     }
 }
 

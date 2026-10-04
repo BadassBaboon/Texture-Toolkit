@@ -75,6 +75,8 @@ set(SOURCES
     src/TextureToolkitUI.cpp
     src/UITheme.cpp
     src/Logo.cpp
+    src/Environment.cpp
+    src/HookTimings.cpp
     src/TextureHash.cpp
     src/DDSLoader.cpp
     TextureToolkit.def

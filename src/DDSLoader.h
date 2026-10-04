@@ -25,6 +25,7 @@ namespace TextureToolkit
         std::string load_error;
     };
 
+    // `filepath` is UTF-8 (see path_utf8).
     bool load_dds(const std::string &filepath, DDSImage &out_image);
     bool save_dds(const std::string &filepath, const reshade::api::resource_desc &desc, const reshade::api::subresource_data &data);
     // `subresources` is ordered the way DDS stores it and D3D indexes it: slice-major, so all

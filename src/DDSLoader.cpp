@@ -1,4 +1,6 @@
 #include "DDSLoader.h"
+#include "PathUtil.h"
+#include <cstdio>
 #include <fstream>
 #include <cstring>
 #include <algorithm>
@@ -108,7 +110,7 @@ namespace TextureToolkit
 
     static bool load_dds_impl(const std::string &filepath, DDSImage &out_image)
     {
-        std::ifstream file(filepath, std::ios::binary);
+        std::ifstream file(path_from_utf8(filepath), std::ios::binary);
         if (!file.is_open())
             return false;
 
@@ -124,8 +126,10 @@ namespace TextureToolkit
             out_image.load_error = "truncated: file ends inside the DDS header";
             return false;
         }
-        if (header.dwSize != sizeof(DDS_HEADER) || header.ddspf.dwSize != sizeof(DDS_PIXELFORMAT))
-            return false;
+        // The two size fields are not checked. Old exporters (some D3DX versions among them) wrote
+        // them wrong, and the header is 124 bytes after the magic whatever they claim; the fields
+        // that matter are validated below. Refusing on them turned away files that read fine
+        // everywhere else, and said nothing in the log about why.
 
         if (header.dwWidth == 0 || header.dwHeight == 0 ||
             header.dwWidth > kMaxDimension || header.dwHeight > kMaxDimension)
@@ -165,9 +169,10 @@ namespace TextureToolkit
             }
             else if (header.ddspf.dwFourCC == MAKE_FOURCC('D', 'X', 'T', '1'))
                 fmt = reshade::api::format::bc1_unorm;
-            else if (header.ddspf.dwFourCC == MAKE_FOURCC('D', 'X', 'T', '3'))
+            // DXT2 and DXT4 are DXT3 and DXT5 with premultiplied alpha: the same blocks.
+            else if (header.ddspf.dwFourCC == MAKE_FOURCC('D', 'X', 'T', '3') || header.ddspf.dwFourCC == MAKE_FOURCC('D', 'X', 'T', '2'))
                 fmt = reshade::api::format::bc2_unorm;
-            else if (header.ddspf.dwFourCC == MAKE_FOURCC('D', 'X', 'T', '5'))
+            else if (header.ddspf.dwFourCC == MAKE_FOURCC('D', 'X', 'T', '5') || header.ddspf.dwFourCC == MAKE_FOURCC('D', 'X', 'T', '4'))
                 fmt = reshade::api::format::bc3_unorm;
             else if (header.ddspf.dwFourCC == MAKE_FOURCC('A', 'T', 'I', '1') || header.ddspf.dwFourCC == MAKE_FOURCC('B', 'C', '4', 'U'))
                 fmt = reshade::api::format::bc4_unorm;
@@ -195,8 +200,22 @@ namespace TextureToolkit
             fmt = reshade::api::format::r8g8b8a8_unorm; // expanded to 32-bit using the masks below
         }
 
+        // Anything not recognised above is refused, with the reason. It used to be read as RGBA8,
+        // which turned a 16-bit, luminance or unsupported block format into garbage on screen.
         if (fmt == reshade::api::format::unknown)
-            fmt = reshade::api::format::r8g8b8a8_unorm;
+        {
+            const uint32_t cc = header.ddspf.dwFourCC;
+            char what[96];
+            if ((header.ddspf.dwFlags & DDPF_FOURCC) != 0)
+                std::snprintf(what, sizeof(what), "unsupported format (FourCC '%c%c%c%c')",
+                              static_cast<char>(cc & 0xFF), static_cast<char>((cc >> 8) & 0xFF),
+                              static_cast<char>((cc >> 16) & 0xFF), static_cast<char>((cc >> 24) & 0xFF));
+            else
+                std::snprintf(what, sizeof(what), "unsupported %u-bit uncompressed format; save it as RGBA8 or a BC format",
+                              static_cast<unsigned>(header.ddspf.dwRGBBitCount));
+            out_image.load_error = what;
+            return false;
+        }
 
         out_image.format = fmt;
 
@@ -315,7 +334,7 @@ namespace TextureToolkit
         if (subresources.empty() || subresources[0].data == nullptr)
             return false;
 
-        std::ofstream file(filepath, std::ios::binary);
+        std::ofstream file(path_from_utf8(filepath), std::ios::binary);
         if (!file.is_open())
             return false;
 

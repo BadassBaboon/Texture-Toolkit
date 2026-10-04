@@ -80,6 +80,9 @@ namespace TextureToolkit
     private:
         ConfigManager() = default;
 
+        void save_keys();
+        void write_template();
+
         std::filesystem::path m_ini_path;
         Configuration m_config;
     };

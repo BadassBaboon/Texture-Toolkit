@@ -101,7 +101,7 @@ Verbose=0
 - `ShowCurrentFrameOnly`: list only textures drawn in the current scene.
 - `AcceptSpecialKNames`: also load files named the way Special K names them. Our own naming always wins when both exist for the same texture.
 - `ShowOSDBanner`: show the startup banner.
-- `Verbose`: write per-texture debug lines to the log; leave off for normal use, since it slows the game.
+- `Verbose`: write per-texture debug lines to the log; leave off for normal use, since it slows the game. It also writes a `[Timing]` line every five seconds: how many frames took over 20 ms, and for each hook how long Texture Toolkit's own work in it took (calls, total, average, worst), so a stutter can be traced to us or ruled out. It can be switched from the panel's Diagnostics page.
 
 Toggling a checkbox in the panel writes its new value back to this file. The mod load order and
 any mod you switch on or off from the panel are kept in two more sections, `[Mods]` and

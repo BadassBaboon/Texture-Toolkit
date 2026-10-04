@@ -2,6 +2,7 @@
 #include "Logger.h"
 
 #include <windows.h>
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <string>
@@ -12,7 +13,10 @@ namespace TextureToolkit::HookTimings
     {
         constexpr int kSites = static_cast<int>(Site::Count);
         constexpr double kReportSeconds = 5.0;
+        // A hitch is a frame over twice the previous report's average frame time, and over 20 ms.
+        // A fixed 20 ms alone counted every frame of a game capped at 30 fps (33 ms) as slow.
         constexpr double kSlowFrameMs = 20.0;
+        constexpr double kHitchFactor = 2.0;
 
         const char *const kNames[kSites] = {
             "D3D9 upload", "D3D9 bind", "D3D11 create", "D3D11 unmap", "D3D11 bind", "overlay",
@@ -71,6 +75,8 @@ namespace TextureToolkit::HookTimings
         uint64_t g_frames = 0;
         uint64_t g_slow_frames = 0;
         uint64_t g_worst_frame = 0;
+        uint64_t g_frame_total = 0;
+        double g_prev_avg_ms = 0.0;
     }
 
     double ticks_per_ms()
@@ -120,7 +126,8 @@ namespace TextureToolkit::HookTimings
                     c.total.store(0, std::memory_order_relaxed);
                     c.worst.store(0, std::memory_order_relaxed);
                 }
-                g_frames = g_slow_frames = g_worst_frame = 0;
+                g_frames = g_slow_frames = g_worst_frame = g_frame_total = 0;
+                g_prev_avg_ms = 0.0;
             }
             g_last_frame = 0;
             g_window_start = 0;
@@ -133,7 +140,9 @@ namespace TextureToolkit::HookTimings
         {
             const uint64_t dt = t - g_last_frame;
             ++g_frames;
-            if (dt / per_ms > kSlowFrameMs)
+            g_frame_total += dt;
+            const double hitch_ms = (std::max)(kSlowFrameMs, g_prev_avg_ms * kHitchFactor);
+            if (dt / per_ms > hitch_ms)
                 ++g_slow_frames;
             if (dt > g_worst_frame)
                 g_worst_frame = dt;
@@ -175,9 +184,11 @@ namespace TextureToolkit::HookTimings
         }
 
         char line[160];
-        std::snprintf(line, sizeof(line), "[Timing] %.1fs: %llu frames, %llu over %.0f ms, worst %.1f ms",
-                      window_ms / 1000.0, static_cast<unsigned long long>(g_frames),
-                      static_cast<unsigned long long>(g_slow_frames), kSlowFrameMs, g_worst_frame / per_ms);
+        const double avg_ms = (g_frames != 0) ? (g_frame_total / per_ms) / static_cast<double>(g_frames) : 0.0;
+        std::snprintf(line, sizeof(line), "[Timing] %.1fs: %llu frames, avg %.1f ms, %llu hitches (over %.0f ms), worst %.1f ms",
+                      window_ms / 1000.0, static_cast<unsigned long long>(g_frames), avg_ms,
+                      static_cast<unsigned long long>(g_slow_frames),
+                      (std::max)(kSlowFrameMs, g_prev_avg_ms * kHitchFactor), g_worst_frame / per_ms);
         std::string report = line;
 
         for (int i = 0; i < kSites; ++i)
@@ -196,8 +207,10 @@ namespace TextureToolkit::HookTimings
         }
         Logger::get().debug(report);
 
+        g_prev_avg_ms = avg_ms;
         g_window_start = t;
         g_window_qpc = qpc_now();
+        g_frame_total = 0;
         g_frames = 0;
         g_slow_frames = 0;
         g_worst_frame = 0;

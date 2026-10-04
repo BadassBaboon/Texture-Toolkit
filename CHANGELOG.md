@@ -61,16 +61,16 @@ them, so every existing mod keeps working.
   version resource, so a proxy DLL in the game folder reads as what it is ("dinput8.dll in the game
   folder: Ultimate ASI Loader 9.7.2", "ReShade 6.8.0 (d3d9.dll)"), and ReShade add-ons by file.
 - **Per-hook timings in the verbose log.** Every five seconds a `[Timing]` line gives the frame
-  count, how many frames took over 20 ms and the worst one, and for texture uploads, texture binds
-  and the overlay on each API, how many calls there were and how long Texture Toolkit's own part of
-  them took: total, average and worst. Only our work inside a hook is timed, never the game's or the
-  driver's call it wraps, so the figures say whether a stutter is ours. With verbose logging off it
-  costs one flag check per call. Measured with the system clock, not the game's: a frame-rate
-  unlocker that hooks the game's timers ran its clock about 18x fast in NFS: The Run, which would
-  otherwise have made nonsense of every figure. When the game's clock is off like that, the log
-  says so once. Suggested by the diagnostics build in Aqvilinus's fork.
-
-### Changed
+  count, the average frame time, how many frames hitched (over twice the previous average and over
+  20 ms, so a game capped at 30 fps does not read as all hitches) and the worst one, and for texture
+  uploads, texture binds and the overlay on each API, how many calls there were and how long Texture
+  Toolkit's own part of them took: total, average and worst. Only our work inside a hook is timed,
+  never the game's or the driver's call it wraps, so the figures say whether a stutter is ours. With
+  verbose logging off it costs one flag check per call. Measured with the system clock, not the
+  game's: a frame-rate unlocker that hooks the game's timers ran its clock about 18x fast in NFS:
+  The Run, which would otherwise have made nonsense of every figure. When the game's clock is off
+  like that, the log says so once. Suggested by the diagnostics build in Aqvilinus's fork.  ###
+  Changed
 - **A redesigned panel.** A sidebar splits it into Textures, Mod files, Settings and Diagnostics,
   with figures for tracked, injected, not applied and dumped textures, switches in place of
   checkboxes, statuses as coloured labels, and Segoe UI in place of the built-in pixel font

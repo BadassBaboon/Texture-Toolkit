@@ -111,6 +111,7 @@ namespace TextureToolkit
         // What a bind of `orig` would get right now (nothing during Blink's off half, else its
         // replacement or itself), without counting it as drawn. For re-applying a bind.
         IDirect3DBaseTexture9 *blink_binding9(IDirect3DBaseTexture9 *orig);
+        bool is_magenta9(IDirect3DBaseTexture9 *texture) const { return texture != nullptr && texture == m_magenta_tex9; }
 
         // Active Texture Queries
         // hidden_out receives how many tracked textures the scene filter removed. A texture the
@@ -316,6 +317,20 @@ namespace TextureToolkit
         uint64_t m_preview_target_hash = 0;
         IDirect3DBaseTexture9 *m_preview_tex9 = nullptr;
         ID3D11ShaderResourceView *m_preview_srv11 = nullptr;
+
+        // Blink in game's stand-in: a 1x1 opaque magenta texture bound in place of the selected
+        // one for half of each blink, so it reads the same in every API (with nothing bound, D3D9
+        // samples black and D3D11 transparent black, which just makes the texture vanish).
+        // Created on first use, on the device the game is drawing with.
+        IDirect3DTexture9 *m_magenta_tex9 = nullptr;
+        IDirect3DDevice9 *m_magenta_dev9 = nullptr;   // compared only
+        std::atomic<ID3D11ShaderResourceView *> m_magenta_srv11{nullptr};
+        std::atomic<ID3D11ShaderResourceView *> m_magenta_srv11_array{nullptr};
+        ID3D11Device *m_magenta_dev11 = nullptr;      // compared only
+        IDirect3DBaseTexture9 *magenta_stand_in9(IDirect3DBaseTexture9 *orig);
+        void ensure_magenta11(ID3D11ShaderResourceView *orig);
+        void release_magenta();
+        ID3D11ShaderResourceView *magenta_srv11(uint32_t stand_in) const;
 
         // Dumped-file preview, loaded on demand (see get_file_preview_handle).
         uint64_t m_file_preview_hash = 0;

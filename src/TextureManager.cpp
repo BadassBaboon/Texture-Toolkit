@@ -73,6 +73,8 @@ namespace TextureToolkit
         uint64_t hash;
         uint64_t last_seen_frame;
         ID3D11ShaderResourceView *replacement;  // null = leave the original in place
+        uint32_t stand_in;                      // Blink's magenta: 0 none (bind nothing), 1 2D, 2 2D array
+        uint32_t reserved;
     };
 
     // Hashes drawn this frame, accumulated per thread and merged in batches, so the bind hook does
@@ -545,6 +547,7 @@ namespace TextureToolkit
             p->Release();
         m_retired_replacements.clear();
         release_preview();
+        release_magenta();
 
         for (auto &rb : m_readback_queue)
         {
@@ -585,11 +588,11 @@ namespace TextureToolkit
         DWORD size = sizeof(hash);
         if (orig == nullptr || FAILED(orig->GetPrivateData(TT_HASH_GUID, &hash, &size)) || size != sizeof(hash))
             return orig;
+        std::lock_guard<std::mutex> lock(m_mutex);
         if (highlight_selected && hash == m_highlight_hash.load(std::memory_order_relaxed) && blink_phase_off())
-            return nullptr;
+            return magenta_stand_in9(orig);
         if (!enable_injection || orig->GetType() != D3DRTYPE_TEXTURE)
             return orig;
-        std::lock_guard<std::mutex> lock(m_mutex);
         auto it = m_d3d9_replacements.find(hash);
         return (it != m_d3d9_replacements.end() && it->second != nullptr) ? it->second : orig;
     }
@@ -621,6 +624,144 @@ namespace TextureToolkit
                             " time(s) in the last second" +
                             (binds == 0 ? "; the game is not drawing it now, so it cannot blink."
                                         : ", " + std::to_string(hidden) + " of them hidden."));
+    }
+
+    static bool dxgi_format_is_integer(DXGI_FORMAT f)
+    {
+        switch (f)
+        {
+        case DXGI_FORMAT_R32G32B32A32_UINT: case DXGI_FORMAT_R32G32B32A32_SINT:
+        case DXGI_FORMAT_R32G32B32_UINT:    case DXGI_FORMAT_R32G32B32_SINT:
+        case DXGI_FORMAT_R16G16B16A16_UINT: case DXGI_FORMAT_R16G16B16A16_SINT:
+        case DXGI_FORMAT_R32G32_UINT:       case DXGI_FORMAT_R32G32_SINT:
+        case DXGI_FORMAT_X32_TYPELESS_G8X24_UINT:
+        case DXGI_FORMAT_R10G10B10A2_UINT:
+        case DXGI_FORMAT_R8G8B8A8_UINT:     case DXGI_FORMAT_R8G8B8A8_SINT:
+        case DXGI_FORMAT_R16G16_UINT:       case DXGI_FORMAT_R16G16_SINT:
+        case DXGI_FORMAT_R32_UINT:          case DXGI_FORMAT_R32_SINT:
+        case DXGI_FORMAT_X24_TYPELESS_G8_UINT:
+        case DXGI_FORMAT_R8G8_UINT:         case DXGI_FORMAT_R8G8_SINT:
+        case DXGI_FORMAT_R16_UINT:          case DXGI_FORMAT_R16_SINT:
+        case DXGI_FORMAT_R8_UINT:           case DXGI_FORMAT_R8_SINT:
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    // A plain 2D texture gets the magenta stand-in; a cube or volume one, which a 2D texture
+    // cannot stand in for, gets nothing bound. Caller MUST hold m_mutex.
+    IDirect3DBaseTexture9 *TextureManager::magenta_stand_in9(IDirect3DBaseTexture9 *orig)
+    {
+        if (orig->GetType() != D3DRTYPE_TEXTURE)
+            return nullptr;
+        IDirect3DDevice9 *device = nullptr;
+        if (FAILED(orig->GetDevice(&device)) || device == nullptr)
+            return nullptr;
+        if (device != m_magenta_dev9 && m_magenta_tex9 != nullptr)
+        {
+            m_retired_replacements.push_back(m_magenta_tex9); // may still be bound this frame
+            m_retire_after_frame = m_frame_count + 2;
+            m_magenta_tex9 = nullptr;
+        }
+        if (m_magenta_tex9 == nullptr)
+        {
+            m_magenta_dev9 = device;
+            ScopedFlag no_reentry(D3D9Hook::s_inside_injection);
+            IDirect3DTexture9 *tex = nullptr;
+            if (SUCCEEDED(device->CreateTexture(1, 1, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &tex, nullptr)) && tex != nullptr)
+            {
+                D3DLOCKED_RECT rect = {};
+                if (SUCCEEDED(tex->LockRect(0, &rect, nullptr, 0)) && rect.pBits != nullptr)
+                {
+                    *static_cast<uint32_t *>(rect.pBits) = 0xFFFF00FFu; // ARGB: opaque magenta
+                    tex->UnlockRect(0);
+                    m_magenta_tex9 = tex;
+                }
+                else
+                    tex->Release();
+            }
+        }
+        device->Release();
+        return m_magenta_tex9;
+    }
+
+    // Caller MUST hold m_mutex.
+    void TextureManager::ensure_magenta11(ID3D11ShaderResourceView *orig)
+    {
+        ID3D11Device *device = nullptr;
+        orig->GetDevice(&device);
+        if (device == nullptr)
+            return;
+        if (device != m_magenta_dev11)
+        {
+            // A view from another device cannot be bound here. Retired, not released: another
+            // thread's bind may have just picked it up.
+            if (ID3D11ShaderResourceView *old = m_magenta_srv11.exchange(nullptr))
+                m_retired_replacements.push_back(old);
+            if (ID3D11ShaderResourceView *old = m_magenta_srv11_array.exchange(nullptr))
+                m_retired_replacements.push_back(old);
+            m_retire_after_frame = m_frame_count + 2;
+            m_magenta_dev11 = device;
+        }
+        if (m_magenta_srv11.load() == nullptr)
+        {
+            ScopedFlag no_reentry(D3D11Hook::s_inside_injection);
+            const uint32_t magenta = 0xFFFF00FFu; // RGBA8 little-endian: R=FF G=00 B=FF A=FF
+            D3D11_TEXTURE2D_DESC desc = {};
+            desc.Width = 1;
+            desc.Height = 1;
+            desc.MipLevels = 1;
+            desc.ArraySize = 1;
+            desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            desc.SampleDesc.Count = 1;
+            desc.Usage = D3D11_USAGE_IMMUTABLE;
+            desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            D3D11_SUBRESOURCE_DATA init = {};
+            init.pSysMem = &magenta;
+            init.SysMemPitch = sizeof(magenta);
+            ID3D11Texture2D *tex = nullptr;
+            if (SUCCEEDED(device->CreateTexture2D(&desc, &init, &tex)) && tex != nullptr)
+            {
+                ID3D11ShaderResourceView *srv = nullptr;
+                if (SUCCEEDED(device->CreateShaderResourceView(tex, nullptr, &srv)) && srv != nullptr)
+                    m_magenta_srv11.store(srv);
+
+                D3D11_SHADER_RESOURCE_VIEW_DESC vd = {};
+                vd.Format = desc.Format;
+                vd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
+                vd.Texture2DArray.MipLevels = 1;
+                vd.Texture2DArray.ArraySize = 1;
+                ID3D11ShaderResourceView *srv_array = nullptr;
+                if (SUCCEEDED(device->CreateShaderResourceView(tex, &vd, &srv_array)) && srv_array != nullptr)
+                    m_magenta_srv11_array.store(srv_array);
+                tex->Release(); // the views keep it alive
+            }
+        }
+        device->Release();
+    }
+
+    ID3D11ShaderResourceView *TextureManager::magenta_srv11(uint32_t stand_in) const
+    {
+        if (stand_in == 1)
+            return m_magenta_srv11.load(std::memory_order_acquire);
+        if (stand_in == 2)
+            return m_magenta_srv11_array.load(std::memory_order_acquire);
+        return nullptr;
+    }
+
+    // Caller MUST hold m_mutex.
+    void TextureManager::release_magenta()
+    {
+        if (m_magenta_tex9 != nullptr)
+            m_magenta_tex9->Release();
+        m_magenta_tex9 = nullptr;
+        m_magenta_dev9 = nullptr;
+        if (ID3D11ShaderResourceView *srv = m_magenta_srv11.exchange(nullptr))
+            srv->Release();
+        if (ID3D11ShaderResourceView *srv = m_magenta_srv11_array.exchange(nullptr))
+            srv->Release();
+        m_magenta_dev11 = nullptr;
     }
 
     bool TextureManager::is_highlight_texture9(IDirect3DBaseTexture9 *texture) const
@@ -1371,7 +1512,7 @@ namespace TextureToolkit
 
         // After the bookkeeping above, so a texture blinked out is still tracked and captured.
         if (hidden_by_highlight(hash))
-            return nullptr;
+            return magenta_stand_in9(orig);
 
         // Replacements are 2D textures. Never hand a cube or volume texture slot a 2D texture
         // (mirrors the view-dimension guard on the D3D11 side).
@@ -1860,7 +2001,7 @@ namespace TextureToolkit
             }
 
             if (hidden_by_highlight(cache.hash))
-                return nullptr;
+                return magenta_srv11(cache.stand_in);
 
             // enable_injection is read live rather than cached, so the panel's checkbox takes
             // effect immediately instead of waiting for a generation bump.
@@ -1910,8 +2051,19 @@ namespace TextureToolkit
 
         cache.tracked = 1;
         cache.hash = hash;
+        // Magenta only where it is the same kind of thing the shader expects: a 2D or 2D-array
+        // view of a format it reads as numbers between 0 and 1. Anything else gets nothing bound.
+        if (!dxgi_format_is_integer(vd.Format))
+        {
+            if (vd.ViewDimension == D3D11_SRV_DIMENSION_TEXTURE2D)
+                cache.stand_in = 1;
+            else if (vd.ViewDimension == D3D11_SRV_DIMENSION_TEXTURE2DARRAY)
+                cache.stand_in = 2;
+        }
 
         std::lock_guard<std::mutex> lock(m_mutex);
+        if (cache.stand_in != 0)
+            ensure_magenta11(orig);
         m_current_frame_hashes.insert(hash);
 
         // Record how the game samples this texture (the SRV's concrete view format). Done
@@ -1975,6 +2127,8 @@ namespace TextureToolkit
         }
 
         orig->SetPrivateData(TT_SRV_CACHE_GUID, sizeof(cache), &cache);
+        if (hidden_by_highlight(hash))
+            return magenta_srv11(cache.stand_in);
         return result;
     }
 

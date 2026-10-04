@@ -600,7 +600,7 @@ namespace TextureToolkit
             const float row_h = ImGui::GetTextLineHeight() + 4.0f;
             const float y = ImGui::GetCursorPosY();
             ImGui::SetCursorPosY(y + (row_h - sw.y) * 0.5f);
-            const char *tip = "Make this texture blink on and off in the game while it is selected here,\n"
+            const char *tip = "Make this texture blink magenta in the game while it is selected here,\n"
                               "so whatever it is drawn on can be found by eye.";
             if (ToggleSwitch("##blink", &tm.highlight_selected))
                 persist_settings(tm);

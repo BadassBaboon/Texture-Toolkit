@@ -1018,6 +1018,11 @@ namespace TextureToolkit
         {
             HookTimings::Scope timing(HookTimings::Site::D3D9Bind);
             pReplacement = TextureManager::get().get_replacement_texture9(pTexture);
+            // Vertex texture fetch reads only a few float formats; Blink's magenta (A8R8G8B8)
+            // is not one of them on most cards, so a vertex sampler gets nothing instead.
+            if (Stage >= D3DVERTEXTEXTURESAMPLER0 && pReplacement != nullptr && pReplacement != pTexture &&
+                TextureManager::get().is_highlight_texture9(pTexture) && TextureManager::get().is_magenta9(pReplacement))
+                pReplacement = nullptr;
             set_blink_stage(Stage, TextureManager::get().is_highlight_texture9(pTexture) ? pTexture : nullptr);
             if (Stage < kBlinkStages)
                 s_blink_bound[Stage] = pReplacement;

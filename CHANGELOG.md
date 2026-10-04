@@ -27,15 +27,19 @@ them, so every existing mod keeps working.
   packs never matched those textures here. The same checksum is now taken where we already watch
   D3DX, and only while Special K-named files are present, as with the rest of our Special K
   matching.
-- **Blink in game.** The texture selected on the Textures page blinks on and off in the game, so
-  the thing it is drawn on can be found by eye instead of by elimination. On by default, switched in
-  the inspector, and saved as `HighlightSelected`. Taken from Special K's "Highlight Selected
-  Texture in Game": the texture is bound as nothing for half of each blink, which both APIs allow,
-  and only while the Textures page is open. Direct3D 9 games that bind a texture once and leave it
-  bound (Bully, for one) are re-applied once a frame, so the blink does not freeze there; the
-  panel's own preview never blinks. With Verbose logging on, the log reports once a second how
-  often the game drew the blinking texture: art the game draws once into an image it reuses (some
-  HUDs and menus) shows zero there and cannot blink.
+- **Blink in game.** The texture selected on the Textures page blinks magenta in the game, so the
+  thing it is drawn on can be found by eye instead of by elimination. On by default, switched in the
+  inspector, and saved as `HighlightSelected`. Taken from Special K's "Highlight Selected Texture in
+  Game", with one change: for half of each blink a solid magenta texture stands in for the selected
+  one, where Special K binds nothing. Nothing reads as black in Direct3D 9 but as transparent in
+  Direct3D 11, so there the texture only vanished; magenta looks the same everywhere and stands out
+  against dark art. Textures magenta cannot stand in for (cube, volume and integer textures, and
+  vertex-shader textures in Direct3D 9) get nothing bound instead, which both APIs allow. Runs only
+  while the Textures page is open, and stops as soon as the panel closes. Direct3D 9 games that bind
+  a texture once and leave it bound (Bully, for one) are re-applied once a frame, so the blink does
+  not freeze there; the panel's own preview never blinks. With Verbose logging on, the log reports
+  once a second how often the game drew the blinking texture: art the game draws once into an
+  image it reuses (some HUDs and menus) shows zero there and cannot blink.
 - **Texture mods.** Every folder in `TT` other than `dump` and `inject` is loaded as a mod of its
   own, subfolders included, so a downloaded mod no longer has to be merged into `inject`. The Mod
   files page lists each one with a switch and up and down buttons for the load order: where two

@@ -79,7 +79,6 @@ set(SOURCES
     src/HookTimings.cpp
     src/TextureHash.cpp
     src/DDSLoader.cpp
-    TextureToolkit.def
     ${MINHOOK_SOURCES}
     ${IMGUI_SOURCES}
 )
@@ -115,7 +114,7 @@ target_link_libraries(TextureToolkit PRIVATE Shlwapi d3d9 d3d11 dxgi Psapi Versi
 option(TT_BUILD_UI_PREVIEW "Build the headless panel preview tool" OFF)
 if(TT_BUILD_UI_PREVIEW)
     set(PREVIEW_SOURCES ${SOURCES})
-    list(REMOVE_ITEM PREVIEW_SOURCES src/Main.cpp TextureToolkit.def)
+    list(REMOVE_ITEM PREVIEW_SOURCES src/Main.cpp)
     add_executable(TextureToolkitUIPreview tools/ui_preview/ui_preview.cpp ${PREVIEW_SOURCES})
     target_compile_definitions(TextureToolkitUIPreview PRIVATE
         WIN32_LEAN_AND_MEAN

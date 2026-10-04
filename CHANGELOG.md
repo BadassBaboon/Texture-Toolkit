@@ -12,6 +12,8 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-04
+
 A redesigned panel, texture mods with a load order, and fixes carried over from
 [toptensoftware's fork](https://github.com/toptensoftware/Texture-Toolkit). Nothing here changes how
 a texture is identified: hashes, file names and the `TT/inject` layout are exactly as 1.1.0 left
@@ -388,6 +390,7 @@ First public release.
   rather than guessed at, so adding one later makes new textures moddable without changing a hash
   that already exists.
 
-[Unreleased]: https://github.com/BadassBaboon/Texture-Toolkit/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/BadassBaboon/Texture-Toolkit/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/BadassBaboon/Texture-Toolkit/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/BadassBaboon/Texture-Toolkit/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/BadassBaboon/Texture-Toolkit/releases/tag/v1.0.0

@@ -90,7 +90,7 @@ namespace TextureToolkit
 
         ImFont *strong = font_strong();
         ImFont *body = font_body();
-        const ImVec2 title_sz = strong->CalcTextSizeA(kSizeBody + 1.0f, FLT_MAX, 0.0f, title);
+        const ImVec2 title_sz = strong->CalcTextSizeA(kSizeHeading, FLT_MAX, 0.0f, title);
         const ImVec2 ver_sz = body->CalcTextSizeA(kSizeSmall, FLT_MAX, 0.0f, version);
         const char *credit = "by BadassBaboon";
         const ImVec2 credit_sz = body->CalcTextSizeA(kSizeSmall, FLT_MAX, 0.0f, credit);
@@ -120,7 +120,7 @@ namespace TextureToolkit
         const auto fade = [alpha](ImVec4 c) { c.w *= alpha; return c; };
         float x = i0.x + icon + gap;
         float y = a.y + 13.0f;
-        dl->AddText(strong, kSizeBody + 1.0f, ImVec2(x, y), u32(fade(p.text)), title);
+        dl->AddText(strong, kSizeHeading, ImVec2(x, y), u32(fade(p.text)), title);
         dl->AddText(body, kSizeSmall, ImVec2(x + title_sz.x + 8.0f, y + 2.0f), u32(fade(p.text_muted)), version);
         dl->AddText(body, kSizeSmall, ImVec2(x + title_sz.x + 8.0f + ver_sz.x + 8.0f, y + 2.0f), u32(fade(p.text_faint)), credit);
 

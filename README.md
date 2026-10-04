@@ -127,7 +127,8 @@ edits win over any mod until you move a mod above it. A new mod starts at the bo
 at once, and **Reload replacements** picks up a mod folder added while the game runs.
 
 A mod can describe itself with a `mod.ini` in its folder. Every key is optional; without the file
-the folder name is shown and the mod is on.
+the folder name is shown and the mod is on. [`tools/mod.ini.example`](tools/mod.ini.example) is a
+commented starting point: copy it into the mod's folder and rename it `mod.ini`.
 
 ```ini
 [Mod]

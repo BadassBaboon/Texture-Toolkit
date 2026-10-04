@@ -58,6 +58,19 @@ namespace TextureToolkit
         Logger::get().info("[UI] " + msg);
     }
 
+    // UTF-8 for ImGui. path::string() converts through the ANSI code page and throws on a
+    // character it cannot represent, which a user's folder name can easily contain.
+    static std::string narrow(const std::wstring &w)
+    {
+        if (w.empty())
+            return {};
+        const int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
+        std::string out(static_cast<size_t>((std::max)(n, 0)), '\0');
+        if (n > 0)
+            WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), out.data(), n, nullptr, nullptr);
+        return out;
+    }
+
     static void OpenDirectory(const std::filesystem::path &dir_path)
     {
         std::error_code ec;
@@ -289,8 +302,8 @@ namespace TextureToolkit
         dl->AddCircleFilled(ImVec2(cx, cy - 34.0f), 22.0f, u32(pal().accent, 0.10f));
         draw_icon(dl, icon, ImVec2(cx, cy - 34.0f), 20.0f, u32(pal().accent));
 
-        const ImVec2 ts = font_strong()->CalcTextSizeA(kSizeBody + 1.0f, FLT_MAX, 0.0f, title);
-        dl->AddText(font_strong(), kSizeBody + 1.0f, ImVec2(cx - ts.x * 0.5f, cy), u32(pal().text), title);
+        const ImVec2 ts = font_strong()->CalcTextSizeA(kSizeHeading, FLT_MAX, 0.0f, title);
+        dl->AddText(font_strong(), kSizeHeading, ImVec2(cx - ts.x * 0.5f, cy), u32(pal().text), title);
         if (detail != nullptr)
         {
             const float wrap = (std::min)(avail.x - 40.0f, 340.0f);
@@ -306,7 +319,7 @@ namespace TextureToolkit
     {
         if (font == nullptr)
             font = font_body();
-        const float size = (font == font_mono()) ? kSizeBody - 1.0f : kSizeBody;
+        const float size = (font == font_mono()) ? kSizeMono : kSizeBody;
         const ImVec2 p = ImGui::GetCursorScreenPos();
         const float th = font->CalcTextSizeA(size, FLT_MAX, 0.0f, text).y;
         ImGui::GetWindowDrawList()->AddText(font, size, ImVec2(p.x, p.y + (row_inner_h - th) * 0.5f),
@@ -385,10 +398,10 @@ namespace TextureToolkit
 
             char dims[32];
             std::snprintf(dims, sizeof(dims), "%u x %u", pw, ph);
-            const ImVec2 ds = font_mono()->CalcTextSizeA(kSizeSmall, FLT_MAX, 0.0f, dims);
+            const ImVec2 ds = font_body()->CalcTextSizeA(kSizeSmall, FLT_MAX, 0.0f, dims);
             const ImVec2 d1(b.x - 10.0f, a.y + 10.0f + ds.y + 6.0f), d0(d1.x - ds.x - 16.0f, a.y + 10.0f);
             dl->AddRectFilled(d0, d1, u32(ImVec4(0.059f, 0.055f, 0.051f, 0.80f)), 999.0f);
-            dl->AddText(font_mono(), kSizeSmall, ImVec2(d0.x + 8.0f, d0.y + 3.0f), u32(pal().text_muted), dims);
+            dl->AddText(font_body(), kSizeSmall, ImVec2(d0.x + 8.0f, d0.y + 3.0f), u32(pal().text_muted), dims);
         }
     }
 
@@ -398,7 +411,7 @@ namespace TextureToolkit
         ImGui::Dummy(ImVec2(0.0f, 4.0f));
 
         const std::string hash = "0x" + tex.hash_hex;
-        ImGui::PushFont(font_mono(), kSizeBody + 2.0f);
+        ImGui::PushFont(font_mono(), kSizeMono + 2.0f); // the selected hash, as the inspector's heading
         ImGui::TextUnformatted(hash.c_str());
         ImGui::PopFont();
         ImGui::SameLine();
@@ -475,7 +488,7 @@ namespace TextureToolkit
         {
             ImGui::Dummy(ImVec2(0.0f, 6.0f));
             SectionLabel("FILE");
-            ImGui::PushFont(font_mono(), kSizeSmall);
+            ImGui::PushFont(nullptr, kSizeSmall);
             ImGui::PushStyleColor(ImGuiCol_Text, pal().text_muted);
             ImGui::TextWrapped("%s", path->c_str());
             ImGui::PopStyleColor();
@@ -782,8 +795,8 @@ namespace TextureToolkit
                                 // No 0x here: it is the same on every row, and the width goes to the
                                 // format column instead. The inspector, and Copy hash, keep it.
                                 const std::string &h = tex.hash_hex;
-                                const float th = font_mono()->CalcTextSizeA(kSizeBody - 1.0f, FLT_MAX, 0.0f, h.c_str()).y;
-                                ImGui::GetWindowDrawList()->AddText(font_mono(), kSizeBody - 1.0f,
+                                const float th = font_mono()->CalcTextSizeA(kSizeMono, FLT_MAX, 0.0f, h.c_str()).y;
+                                ImGui::GetWindowDrawList()->AddText(font_mono(), kSizeMono,
                                                                     ImVec2(cell.x, cell.y + (inner_h - th) * 0.5f),
                                                                     u32(selected ? pal().text : pal().text_muted), h.c_str());
                             }
@@ -924,7 +937,7 @@ namespace TextureToolkit
             {
                 char prio[8];
                 std::snprintf(prio, sizeof(prio), "%zu", i + 1);
-                ImGui::PushFont(font_mono(), kSizeSmall);
+                ImGui::PushFont(nullptr, kSizeSmall);
                 ImGui::TextColored(pal().text_faint, "%s", prio);
                 ImGui::PopFont();
                 ImGui::SameLine(0.0f, 10.0f);
@@ -1101,9 +1114,9 @@ namespace TextureToolkit
             if (UI::Button("Open inject folder"))
                 OpenDirectory(tm.get_inject_dir());
 
-            ImGui::PushFont(font_mono(), kSizeSmall);
+            ImGui::PushFont(nullptr, kSizeSmall);
             ImGui::PushStyleColor(ImGuiCol_Text, pal().text_faint);
-            ImGui::TextWrapped("%s", tm.get_inject_dir().string().c_str());
+            ImGui::TextWrapped("%s", narrow(tm.get_inject_dir().wstring()).c_str());
             ImGui::PopStyleColor();
             ImGui::PopFont();
         }
@@ -1136,26 +1149,15 @@ namespace TextureToolkit
         EndCard();
 
         BeginCard("folders", "Folders", "Set ResourceRoot in TextureToolkit.ini to move all of these at once.");
-        KeyValue("Resource root", cfg.resource_root.string().c_str(), true);
-        KeyValue("Inject", tm.get_inject_dir().string().c_str(), true);
-        KeyValue("Dump", tm.get_dump_dir().string().c_str(), true);
+        KeyValue("Resource root", narrow(tm.get_resource_root().wstring()).c_str());
+        KeyValue("Inject", narrow(tm.get_inject_dir().wstring()).c_str());
+        KeyValue("Dump", narrow(tm.get_dump_dir().wstring()).c_str());
         EndCard();
     }
 
     // ---- Build info ---------------------------------------------------------------------------
     // Everything worth knowing about a user's setup when a texture will not show, on one card that
     // can be screenshotted, or copied as text with one click and pasted into a bug report.
-
-    static std::string narrow(const std::wstring &w)
-    {
-        if (w.empty())
-            return {};
-        const int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
-        std::string out(static_cast<size_t>((std::max)(n, 0)), '\0');
-        if (n > 0)
-            WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), out.data(), n, nullptr, nullptr);
-        return out;
-    }
 
     static std::wstring module_path(HMODULE module)
     {
@@ -1308,8 +1310,8 @@ namespace TextureToolkit
         rows.push_back({ "Texture Toolkit", std::string("v") + TT_VERSION_STRING + (sizeof(void *) == 8 ? " x64" : " x86") +
                                                 ", built " __DATE__ " " __TIME__ });
         rows.push_back({ "Game", narrow(exe.filename().wstring()) });
-        rows.push_back({ "Game folder", narrow(exe.parent_path().wstring()), true });
-        rows.push_back({ "Loaded from", narrow(module_path(self)), true });
+        rows.push_back({ "Game folder", narrow(exe.parent_path().wstring()) });
+        rows.push_back({ "Loaded from", narrow(module_path(self)) });
         rows.push_back({ "Windows", windows_version() });
         rows.push_back({ "Graphics API", graphics_api_name() });
         rows.push_back({ "GPU", gpu_description() });
@@ -1337,7 +1339,7 @@ namespace TextureToolkit
         rows.push_back({ "Auto-dump", on(tm.auto_dump) });
         rows.push_back({ "Verbose log", on(cfg.verbose) });
         rows.push_back({ "Panel key", hotkey_name(cfg.hotkey) });
-        rows.push_back({ "Resource root", narrow(tm.get_resource_root().wstring()), true });
+        rows.push_back({ "Resource root", narrow(tm.get_resource_root().wstring()) });
 
         const unsigned long long mins = GetTickCount64() / 60000ULL - s_session_start_min;
         char up[48];

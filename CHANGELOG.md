@@ -12,64 +12,68 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
 
 ## [Unreleased]
 
+A redesigned panel, texture mods with a load order, and fixes carried over from
+[toptensoftware's fork](https://github.com/toptensoftware/Texture-Toolkit). Nothing here changes how
+a texture is identified: hashes, file names and the `TT/inject` layout are exactly as 1.1.0 left
+them, so every existing mod keeps working.
+
 ### Added
 - **Texture mods.** Every folder in `TT` other than `dump` and `inject` is loaded as a mod of its
-  own, recursively, so a downloaded mod no longer has to be merged into `inject`. The Mod files page
-  lists each one with a switch and up and down buttons for the load order: where two ship the same
-  texture, the higher one wins. `TT/inject` is part of that order and starts at the top. An optional
-  `mod.ini` gives a mod its name, author, version, description, and whether it is on by default; the
-  panel's choices are kept in `TextureToolkit.ini` under `[Mods]` and `[ModEnabled]` and win over
-  that default. Builds on the `AdditionalSearchPath` overlay folders in toptensoftware's fork.
-- **"Log this frame" in the panel.** Writes every texture the game draws with in the next frame to
+  own, subfolders included, so a downloaded mod no longer has to be merged into `inject`. The Mod
+  files page lists each one with a switch and up and down buttons for the load order: where two
+  ship the same texture, the higher one wins. `TT/inject` is part of that order and starts at the
+  top, so your own edits win until you move a mod above them. An optional `mod.ini` gives a mod its
+  name, author, version, description, and whether it is on by default; see
+  [`tools/mod.ini.example`](tools/mod.ini.example). The panel's choices are kept in
+  `TextureToolkit.ini` under `[Mods]` and `[ModEnabled]` and win over a mod's default. With
+  `ResourceRoot` set to the game folder itself, only folders carrying a `mod.ini` count, so game
+  data is never scanned. Builds on the `AdditionalSearchPath` overlay folders in toptensoftware's
+  fork.
+- **Build Info on Diagnostics**, covering what a bug report needs: the game and its folder, where
+  the `.asi` loaded from, the Windows version (and Wine/Proton), the GPU with its driver or VRAM, the
+  resolution, other software hooked into the game (ReShade, Special K, RivaTuner, the Steam, Discord
+  and OBS overlays, proxy DLLs in the game folder), every setting, the replacement and mod counts,
+  and the session length. **Copy** puts it on the clipboard as text and writes it to the log.
+- **A Verbose logging switch** on Diagnostics, applied at once. It used to need an ini edit and a
+  restart.
+- **"Log this frame"** on Diagnostics. Writes every texture the game draws with in the next frame to
   the log, each with its hash, size, format, usage and pool. The ordinary per-texture logging is
-  capped at a handful of textures per session, which suits a log read afterwards and cannot answer
-  the question users actually arrive with: which of these hundreds is the thing on screen. Point the
-  camera at it, press the button, and whatever it is drawn with is in that list.
-- The configuration values are logged when settings are saved, not only at startup. Toggling a
-  checkbox mid-session and never touching it used to produce the same line.
-- The log records the configuration values in use, not only where the ini was read from. A texture
-  hidden by `ShowCurrentFrameOnly` used to be indistinguishable in a log from one never tracked.
+  capped at a handful of textures per session, which cannot answer the question users actually
+  arrive with: which of these hundreds is the thing on screen. Point the camera at it, press the
+  button, and whatever it is drawn with is in that list.
+- **A "Join Discord" button** at the foot of the sidebar opens Baboon's Workshop, the Texture
+  Toolkit Discord, in the browser.
+- The panel reports how many tracked textures the scene filter is hiding, with one click to show
+  them. Art the game uploads but never draws with, such as livery pieces composited into a render
+  target, is tracked and then filtered straight back out, which read as the tool failing to see it.
+- The log records the configuration values in use, at startup and whenever a setting is saved, not
+  only where the ini was read from. A texture hidden by `ShowCurrentFrameOnly` used to be
+  indistinguishable in a log from one never tracked.
 - With `Verbose=1`, a bound texture is described as it is bound: dimensions, format, usage and pool,
   and a plain statement when it is a render target that has no file behind it and cannot be
   replaced. This answers "the texture I can see is not in the panel" straight from a log.
-- The panel reports how many tracked textures the scene filter is hiding, and says where the switch
-  is. Art the game uploads but never draws with, such as livery pieces composited into a render
-  target, is tracked and then filtered straight back out, which reads as the tool failing to see it.
-
-- **A "Join Discord" button** at the foot of the panel's sidebar opens Baboon's Workshop, the
-  Texture Toolkit Discord, in the browser.
 
 ### Changed
-- **The panel is reorganised so each control sits with what it acts on.** Auto-dump, Dump all and
-  the dump folder moved from Mod files to the Textures header, and "Skip under 16 x 16" to the
-  Textures toolbar beside "Current scene only"; Mod files is now replacements and mods only.
-  "Log this frame" is on Diagnostics only, and Diagnostics gains a Verbose logging switch that
-  applies at once instead of needing an ini edit and a restart.
-- Text is larger throughout (descriptions from 13 to 15 px, body from 15 to 17) so the smaller
-  lines read comfortably over a game.
-- The sidebar takes its width from what it shows, with the logo beside the name, so nothing in it
-  is shrunk or cut off. The Discord button reads "Join Discord", with "Join Baboon's Workshop" on
-  hover, and a failed-file count on Mod files is a red number.
-- **Build Info on Diagnostics** (was "This build") now covers what a bug report needs: the game and
-  its folder, where the `.asi` loaded from, the Windows version (and Wine/Proton), the GPU and
-  driver or VRAM, the resolution, other software hooked into the game (ReShade, Special K,
-  RivaTuner, the Steam, Discord and OBS overlays, proxy DLLs in the game folder), every panel
-  setting, the replacement and mod counts, and the session length. **Copy** puts it all on the
-  clipboard as text and writes it to the log.
-- **The Texture Toolkit logo and a palette taken from it.** The brick-and-stone logo replaces the
-  drawn badge in the sidebar and on the startup banner; it is compiled into the `.asi`
-  (`assets/logo.png`, regenerated into `src/LogoData.h` by `tools/embed_logo.py`), so there is still
-  only one file to install. The panel stays dark, now in warm charcoal and stone with brick for
-  selections, switches and primary buttons. Brick that reads as text is a lightened shade of the
-  logo's, which is too dark to read on the panel itself, and the error red is pinker than the brick
-  so the two cannot be confused.
-- The panel and the startup banner credit BadassBaboon again, as before the redesign.
-- The sidebar's status box appears only once there is something to report (a reload, a dump, a
-  refused file); it no longer sits there saying "Ready".
-- **A redesigned panel.** A sidebar splits it into Textures, Mod files, Settings and Diagnostics
-  pages, with figures for tracked, injected, not applied and dumped textures, switches in place of
-  checkboxes, status shown as coloured labels, and Segoe UI and Consolas in place of the built-in
-  pixel font. The startup banner matches it, and no longer takes a window of its own.
+- **A redesigned panel.** A sidebar splits it into Textures, Mod files, Settings and Diagnostics,
+  with figures for tracked, injected, not applied and dumped textures, switches in place of
+  checkboxes, statuses as coloured labels, and Segoe UI in place of the built-in pixel font
+  (Consolas only for hashes). The startup banner matches it, and no longer takes a window of its own.
+- **The Texture Toolkit logo, and a palette taken from it.** The brick-and-stone logo heads the
+  sidebar and the startup banner, compiled into the `.asi` from `assets/logo.png` (regenerated into
+  `src/LogoData.h` by `tools/embed_logo.py`), so there is still one file to install. The panel stays
+  dark, in warm charcoal and stone with the logo's brick for selections, switches and primary
+  buttons; brick that reads as text is a lighter shade of it, and the error red is pinker than the
+  brick so the two cannot be confused.
+- **Each control sits with what it acts on.** Textures has dumping (Auto-dump, Dump all, the dump
+  folder) and the list filters (Current scene only, Skip under 16 x 16). Mod files is replacements
+  and mods only. Settings is the overlay and the folder locations. Diagnostics has Log this frame,
+  verbose logging and Build Info.
+- Larger text throughout, on one scale: descriptions 15 px, body 17, card headings 18, page titles
+  23. Paths are set in the body face rather than Consolas, which read as a different size beside it.
+- The sidebar is as wide as its contents need and no wider, and credits BadassBaboon again, as
+  before the redesign. Its status box appears only once there is something to report (a reload, a
+  dump, a refused file) instead of reading "Ready", and failed replacement files show as a red count
+  on Mod files.
 - The texture list draws only the rows on screen. It used to submit every row every frame, which
   is a few thousand in a game like Saints Row 2.
 - Column headers sort the list. The format column uses the short names modders use (RGBA8, BC3,
@@ -77,16 +81,6 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
 - The inspector previews on a checkerboard, so transparent pixels read as transparent.
 
 ### Fixed
-- Switching "Accept Special K names" off left Special K replacements on screen until the next
-  Reload; it rescans at once now. Switching "Skip under 16 x 16" on left tiny textures that were
-  already tracked in the list; they are hidden at once now.
-- **An inject file refused when its texture first loaded was never counted as failed.** Only a
-  file retried later by hot reload was recorded, but most files exist before the game starts and
-  fail on the first try, so the panel said "0 failed" while the texture sat at Pending for good. It
-  is counted now, and a known-bad file is no longer retried on every re-upload of its texture.
-  Reload still clears the record, so a fixed file is tried again.
-- A refused file shows as **Failed** rather than Pending. Pending said it would apply, and it never
-  would.
 - **A Direct3D 11 crash reading a stale `Map()` pointer.** The bookkeeping between `Map` and `Unmap`
   was keyed on the resource's raw pointer with no reference held. A texture the game released while
   still mapped could be destroyed, its address reused by another, and that one's `Unmap` would hash
@@ -94,12 +88,23 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
   entry is always cleaned up (it used to be left behind while a dump was reading back), the
   bookkeeping is shared across threads, and buffers are no longer recorded at all. Ported from
   toptensoftware's fork.
-- **The panel's close button did nothing on the Mod files, Settings and Diagnostics pages.** The
-  scrolling page region was a window drawn over it and took the clicks. The button now sits in a
-  window of its own above every page.
 - **A crash or error when quitting a game.** The dump worker thread was still attached when the
   runtime destroyed the texture manager at process exit, which aborts the process. Ported from
   toptensoftware's fork.
+- **An inject file refused when its texture first loaded was never counted as failed.** Only a
+  file retried later by hot reload was recorded, but most files exist before the game starts and
+  fail on the first try, so the panel said "0 failed" while the texture sat at Pending for good. It
+  is counted now, and a known-bad file is no longer retried on every re-upload of its texture.
+  Reload still clears the record, so a fixed file is tried again.
+- A refused file shows as **Failed** rather than Pending. Pending said it would apply, and it never
+  would.
+- **The panel's close button did nothing on the Mod files, Settings and Diagnostics pages.** The
+  scrolling page region was a window drawn over it and took the clicks.
+- Switching "Accept Special K names" off left Special K replacements on screen until the next
+  Reload; it rescans at once now. Switching "Skip under 16 x 16" on left tiny textures that were
+  already tracked in the list; they are hidden at once now.
+- A folder path containing a character outside the system code page could throw while the panel
+  drew it.
 
 ## [1.1.0] - 2026-08-26
 

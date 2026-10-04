@@ -367,7 +367,7 @@ namespace TextureToolkit::UI
 
         if (title != nullptr)
         {
-            ImGui::PushFont(font_strong(), kSizeBody + 1.0f);
+            ImGui::PushFont(font_strong(), kSizeHeading);
             ImGui::TextUnformatted(title);
             ImGui::PopFont();
         }
@@ -651,10 +651,10 @@ namespace TextureToolkit::UI
         ImGui::SameLine(x + kKeyWidth);
         if (mono)
         {
-            // Consolas runs larger than Segoe UI at the same size, so it is set smaller, and
+            // Consolas runs larger than Segoe UI at the same size, so it is set at kSizeMono, and
             // nudged down to share the label's baseline instead of its top.
             const float body_h = ImGui::GetTextLineHeight();
-            ImGui::PushFont(font_mono(), kSizeSmall + 0.5f);
+            ImGui::PushFont(font_mono(), kSizeMono);
             ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (body_h - ImGui::GetTextLineHeight()) * 0.5f + 1.0f);
         }
         if (value_color != nullptr)

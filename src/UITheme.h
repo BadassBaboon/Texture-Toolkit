@@ -21,8 +21,13 @@ namespace TextureToolkit::UI
     // which 13px Segoe UI was not (15px is); everything else is scaled with them to keep the proportions.
     constexpr float kSizeBody = 17.0f;
     constexpr float kSizeSmall = 15.0f;
+    constexpr float kSizeHeading = 18.0f; // card titles, the banner's title, empty-state headings
     constexpr float kSizeTitle = 23.0f;
     constexpr float kSizeStat = 24.0f;
+    // Consolas, for hashes and hex flags only. Its letters are wider and taller than Segoe UI's
+    // at the same pixel size, so it is set a step down to sit level with kSizeBody text. Paths
+    // and other prose stay in Segoe UI: monospace next to it reads as a different size.
+    constexpr float kSizeMono = 16.0f;
 
     struct Palette
     {

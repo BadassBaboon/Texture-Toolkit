@@ -1,0 +1,46 @@
+; Example mod.ini for a Texture Toolkit texture mod.
+;
+; HOW TO USE
+;   1. Make a folder for your mod inside TT, next to dump and inject, for example:
+;
+;          <game folder>\TT\DualShock\
+;
+;   2. Put your replacement .dds files in it, each named after the hash of the texture it
+;      replaces (5D3E2CCE1A7740B2.dds, 0x5D3E2CCE1A7740B2.dds, or Special K's 5D3E2CCE.dds).
+;      Subfolders are fine, so you can organise them however you like:
+;
+;          TT\DualShock\
+;              mod.ini
+;              buttons\5D3E2CCE1A7740B2.dds
+;              menus\0A1B2C3D4E5F6071.dds
+;
+;   3. Copy this file into the folder and rename it to mod.ini (exactly that name), then
+;      fill in the values below. The file is optional: without it the mod still loads, and
+;      the panel shows the folder name instead.
+;
+;   4. Press "Reload replacements" on the panel's Mod files page, or restart the game. The
+;      mod appears there with a switch, and arrows to move it up or down the load order.
+;      Where two mods replace the same texture, the one higher in the list wins.
+;
+; To share the mod, zip the whole folder. Players unzip it into their TT folder.
+;
+; Every key is optional. Lines starting with ; are comments. Save the file as plain text;
+; for letters outside English, save it as "UTF-16 LE" (Notepad: Save As > Encoding).
+
+[Mod]
+; Shown as the mod's title in the panel. Defaults to the folder name.
+Name=DualShock Button Prompts
+
+; Shown next to the title as "by ...".
+Author=Your Name
+
+; Shown next to the title as "v...". Any text works: 1.0, 2.3b, 2026-10-04.
+Version=1.0
+
+; One line shown under the title. Keep it short; it wraps in the panel.
+Description=Replaces the keyboard prompts with PlayStation buttons.
+
+; Whether the mod is switched on when someone first installs it: 1 or 0, true or false,
+; yes or no, on or off. Defaults to on. Players can still switch it from the panel, and
+; their choice (saved in TextureToolkit.ini under [ModEnabled]) always wins over this.
+Enabled=1

@@ -562,9 +562,56 @@ namespace TextureToolkit
         const uint64_t target = m_highlight_hash.load(std::memory_order_relaxed);
         if (target == 0 || hash != target || !highlight_selected)
             return false;
+        m_highlight_binds.fetch_add(1, std::memory_order_relaxed);
+        return blink_phase_off();
+    }
+
+    bool TextureManager::blink_phase_off()
+    {
         constexpr double kBlinkPeriodMs = 600.0;
         const double ms = static_cast<double>(HookTimings::now()) / HookTimings::ticks_per_ms();
         return std::fmod(ms, kBlinkPeriodMs) >= kBlinkPeriodMs * 0.5;
+    }
+
+    IDirect3DBaseTexture9 *TextureManager::blink_binding9(IDirect3DBaseTexture9 *orig)
+    {
+        uint64_t hash = 0;
+        DWORD size = sizeof(hash);
+        if (orig == nullptr || FAILED(orig->GetPrivateData(TT_HASH_GUID, &hash, &size)) || size != sizeof(hash))
+            return orig;
+        if (highlight_selected && hash == m_highlight_hash.load(std::memory_order_relaxed) && blink_phase_off())
+            return nullptr;
+        if (!enable_injection || orig->GetType() != D3DRTYPE_TEXTURE)
+            return orig;
+        std::lock_guard<std::mutex> lock(m_mutex);
+        auto it = m_d3d9_replacements.find(hash);
+        return (it != m_d3d9_replacements.end() && it->second != nullptr) ? it->second : orig;
+    }
+
+    // Verbose log: what Blink in game is aimed at and how often the game draws it. A texture
+    // drawn once into an off-screen image the game reuses (some HUDs and menus) cannot blink, and
+    // this is how that shows: zero binds while it is plainly on screen. Caller MUST hold m_mutex.
+    void TextureManager::report_highlight(uint64_t now_ticks)
+    {
+        const uint64_t target = highlight_selected ? m_highlight_hash.load(std::memory_order_relaxed) : 0;
+        if (target != m_highlight_logged_hash)
+        {
+            m_highlight_logged_hash = target;
+            m_highlight_report_ticks = now_ticks;
+            m_highlight_binds.store(0, std::memory_order_relaxed);
+            if (target != 0)
+                Logger::get().debug("[Blink] Now blinking " + format_hash_hex(target) + ".");
+            else
+                Logger::get().debug("[Blink] Stopped.");
+            return;
+        }
+        if (target == 0 || now_ticks - m_highlight_report_ticks < 1000)
+            return;
+        m_highlight_report_ticks = now_ticks;
+        const uint32_t binds = m_highlight_binds.exchange(0, std::memory_order_relaxed);
+        Logger::get().debug("[Blink] " + format_hash_hex(target) + " was bound " + std::to_string(binds) +
+                            " time(s) in the last second" +
+                            (binds == 0 ? "; the game is not drawing it now, so it cannot blink." : "."));
     }
 
     bool TextureManager::is_highlight_texture9(IDirect3DBaseTexture9 *texture) const
@@ -819,6 +866,8 @@ namespace TextureToolkit
 
         m_active_frame_hashes = m_current_frame_hashes;
         m_current_frame_hashes.clear();
+
+        report_highlight(now_ticks);
 
         for (uint64_t hash : m_active_frame_hashes)
         {

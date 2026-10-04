@@ -540,7 +540,13 @@ namespace TextureToolkit
         s_key_was_down = key_is_down;
 
         if (!TextureToolkitUI::is_visible())
+        {
             TextureToolkitUI::release_overlay_mouse();
+            // A closed panel leaves the game drawing normally: no blink, no pinned preview. Done
+            // here because a closed panel may skip draw_ui altogether.
+            TextureManager::get().set_highlight_target(0);
+            TextureManager::get().set_preview_target(0);
+        }
 
         TextureManager::get().on_frame();
 
@@ -958,7 +964,7 @@ namespace TextureToolkit
                 }
             }
             // What a bind of it would get right now: hidden, its replacement, or itself.
-            s_blink_bound[stage] = tm.get_replacement_texture9(tex);
+            s_blink_bound[stage] = tm.blink_binding9(tex);
             m_orig_set_texture(device, stage, s_blink_bound[stage]);
             // No longer the target: it is now bound as it normally would be, so let it go.
             if (!tm.is_highlight_texture9(tex))

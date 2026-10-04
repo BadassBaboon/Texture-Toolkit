@@ -33,7 +33,9 @@ them, so every existing mod keeps working.
   Texture in Game": the texture is bound as nothing for half of each blink, which both APIs allow,
   and only while the Textures page is open. Direct3D 9 games that bind a texture once and leave it
   bound (Bully, for one) are re-applied once a frame, so the blink does not freeze there; the
-  panel's own preview never blinks.
+  panel's own preview never blinks. With Verbose logging on, the log reports once a second how
+  often the game drew the blinking texture: art the game draws once into an image it reuses (some
+  HUDs and menus) shows zero there and cannot blink.
 - **Texture mods.** Every folder in `TT` other than `dump` and `inject` is loaded as a mod of its
   own, subfolders included, so a downloaded mod no longer has to be merged into `inject`. The Mod
   files page lists each one with a switch and up and down buttons for the load order: where two

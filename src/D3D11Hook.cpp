@@ -467,7 +467,13 @@ namespace TextureToolkit
         s_key_was_down = key_is_down;
 
         if (!TextureToolkitUI::is_visible())
+        {
             TextureToolkitUI::release_overlay_mouse();
+            // A closed panel leaves the game drawing normally: no blink, no pinned preview. Done
+            // here because a closed panel may skip draw_ui altogether.
+            TextureManager::get().set_highlight_target(0);
+            TextureManager::get().set_preview_target(0);
+        }
 
         // Proof-of-life. If the overlay is invisible in game but these lines keep coming, we are
         // drawing into a surface that is not on screen rather than failing to run. Logged on a

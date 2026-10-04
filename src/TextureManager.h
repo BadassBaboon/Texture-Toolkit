@@ -108,6 +108,10 @@ namespace TextureToolkit
         // holds a DEFAULT-pool resource.
         void release_d3d9_game_references();
 
+        // What a bind of `orig` would get right now (nothing during Blink's off half, else its
+        // replacement or itself), without counting it as drawn. For re-applying a bind.
+        IDirect3DBaseTexture9 *blink_binding9(IDirect3DBaseTexture9 *orig);
+
         // Active Texture Queries
         // hidden_out receives how many tracked textures the scene filter removed. A texture the
         // game uploads but never draws with (livery art composited into a render target, for one)
@@ -231,7 +235,13 @@ namespace TextureToolkit
         std::vector<ModInfo> m_mods;
 
         std::atomic<uint64_t> m_highlight_hash{0};
+        // Binds of the blink target since the last once-a-second report (Verbose log only).
+        mutable std::atomic<uint32_t> m_highlight_binds{0};
+        uint64_t m_highlight_logged_hash = 0;
+        uint64_t m_highlight_report_ticks = 0;
         bool hidden_by_highlight(uint64_t hash) const;
+        void report_highlight(uint64_t now_ticks);
+        static bool blink_phase_off();
 
         mutable std::mutex m_mutex;
         uint64_t m_frame_count = 0;

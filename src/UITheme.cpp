@@ -269,41 +269,6 @@ namespace TextureToolkit::UI
             dl->AddLine(ImVec2(lens.x + r * 0.72f, lens.y + r * 0.72f), ImVec2(c.x + h * 0.9f, c.y + h * 0.9f), col, t * 1.3f);
             break;
         }
-        case Icon::Copy:
-        {
-            dl->AddRect(ImVec2(c.x - h * 0.85f, c.y - h * 0.45f), ImVec2(c.x + h * 0.35f, c.y + h * 0.9f), col, 2.0f, 0, t);
-            dl->AddRect(ImVec2(c.x - h * 0.35f, c.y - h * 0.9f), ImVec2(c.x + h * 0.85f, c.y + h * 0.35f), col, 2.0f, 0, t);
-            break;
-        }
-        case Icon::Download:
-        {
-            dl->AddLine(ImVec2(c.x, c.y - h * 0.9f), ImVec2(c.x, c.y + h * 0.25f), col, t);
-            dl->AddLine(ImVec2(c.x - h * 0.45f, c.y - h * 0.2f), ImVec2(c.x, c.y + h * 0.25f), col, t);
-            dl->AddLine(ImVec2(c.x + h * 0.45f, c.y - h * 0.2f), ImVec2(c.x, c.y + h * 0.25f), col, t);
-            const ImVec2 tray[] = { ImVec2(c.x - h * 0.9f, c.y + h * 0.35f), ImVec2(c.x - h * 0.9f, c.y + h * 0.9f),
-                                    ImVec2(c.x + h * 0.9f, c.y + h * 0.9f), ImVec2(c.x + h * 0.9f, c.y + h * 0.35f) };
-            dl->AddPolyline(tray, 4, col, ImDrawFlags_None, t);
-            break;
-        }
-        case Icon::Refresh:
-        {
-            const float r = h * 0.72f;
-            dl->PathArcTo(c, r, 3.14159265f * 0.25f, 3.14159265f * 1.85f, 18);
-            dl->PathStroke(col, ImDrawFlags_None, t);
-            const ImVec2 tip(c.x + std::cos(3.14159265f * 0.25f) * r, c.y + std::sin(3.14159265f * 0.25f) * r);
-            dl->AddTriangleFilled(ImVec2(tip.x + h * 0.38f, tip.y - h * 0.05f), ImVec2(tip.x - h * 0.05f, tip.y + h * 0.40f),
-                                  ImVec2(tip.x - h * 0.22f, tip.y - h * 0.25f), col);
-            break;
-        }
-        case Icon::Camera:
-        {
-            dl->AddRect(ImVec2(c.x - h, c.y - h * 0.5f), ImVec2(c.x + h, c.y + h * 0.8f), col, 3.0f, 0, t);
-            dl->AddLine(ImVec2(c.x - h * 0.35f, c.y - h * 0.5f), ImVec2(c.x - h * 0.2f, c.y - h * 0.85f), col, t);
-            dl->AddLine(ImVec2(c.x - h * 0.2f, c.y - h * 0.85f), ImVec2(c.x + h * 0.2f, c.y - h * 0.85f), col, t);
-            dl->AddLine(ImVec2(c.x + h * 0.2f, c.y - h * 0.85f), ImVec2(c.x + h * 0.35f, c.y - h * 0.5f), col, t);
-            dl->AddCircle(ImVec2(c.x, c.y + h * 0.15f), h * 0.38f, col, 0, t);
-            break;
-        }
         case Icon::Close:
         {
             dl->AddLine(ImVec2(c.x - h * 0.6f, c.y - h * 0.6f), ImVec2(c.x + h * 0.6f, c.y + h * 0.6f), col, t * 1.2f);

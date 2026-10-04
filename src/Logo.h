@@ -7,7 +7,7 @@ struct ID3D11Device;
 
 // The Texture Toolkit logo as a GPU texture, for the panel and the startup banner. Built from the
 // pixels compiled in from assets/logo.png (see tools/embed_logo.py) on whichever device the overlay
-// draws with. Until it exists, or if creating it fails, draw_logo falls back to a drawn badge.
+// draws with. Until it exists, or if creating it fails, draw() falls back to a drawn badge.
 namespace TextureToolkit::Logo
 {
     // Call once after the ImGui backend is initialised; a later call is a no-op.

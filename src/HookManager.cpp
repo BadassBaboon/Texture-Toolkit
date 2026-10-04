@@ -39,7 +39,6 @@ namespace TextureToolkit
 
         MH_DisableHook(MH_ALL_HOOKS);
         MH_Uninitialize();
-        m_active_hooks.clear();
         m_initialized = false;
         Logger::get().info("[HookManager] MinHook subsystem shut down successfully.");
     }

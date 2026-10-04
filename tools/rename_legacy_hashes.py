@@ -80,14 +80,17 @@ BLOCK_FORMATS = {
 }
 
 PIXEL_FORMATS = {
-    2: 16, 3: 16, 4: 16,             # R32G32B32A32
-    9: 8, 10: 8, 11: 8,              # R16G16B16A16
-    27: 4, 28: 4, 29: 4, 30: 4, 31: 4,   # R8G8B8A8
-    40: 4, 41: 4, 42: 4,             # R32 / D32
-    87: 4, 88: 4, 90: 4, 91: 4,      # B8G8R8A8 / B8G8R8X8
-    24: 4, 25: 4, 26: 4,             # R10G10B10A2
-    34: 2, 35: 2, 36: 2,             # R16G16 family entries used in dumps
-    49: 1, 54: 2, 61: 1,             # R8 / R16 / A8
+    2: 16, 3: 16, 4: 16,             # R32G32B32A32 typeless / float / uint
+    9: 8, 10: 8, 11: 8,              # R16G16B16A16 typeless / float / unorm
+    24: 4, 25: 4, 26: 4,             # R10G10B10A2 typeless / unorm / uint
+    27: 4, 28: 4, 29: 4, 30: 4, 31: 4,   # R8G8B8A8 typeless / unorm / unorm_srgb / uint / snorm
+    33: 4, 34: 4, 35: 4, 36: 4, 37: 4, 38: 4,   # R16G16 typeless / float / unorm / uint / snorm / sint
+    40: 4, 41: 4, 42: 4,             # D32_FLOAT / R32_FLOAT / R32_UINT
+    48: 2, 49: 2, 50: 2, 51: 2, 52: 2,   # R8G8 typeless / unorm / uint / snorm / sint (D3D9 A8L8 dumps as 49)
+    53: 2, 54: 2, 56: 2,             # R16 typeless / float / unorm
+    60: 1, 61: 1, 65: 1,             # R8 typeless / unorm (D3D9 L8), A8_UNORM (D3D9 A8)
+    85: 2, 86: 2,                    # B5G6R5 / B5G5R5A1 (D3D9 R5G6B5 / A1R5G5B5)
+    87: 4, 88: 4, 90: 4, 91: 4,      # B8G8R8A8 unorm / B8G8R8X8 unorm / B8G8R8A8 typeless / srgb
 }
 
 FOURCC_BLOCK = {b"DXT1": 8, b"DXT2": 16, b"DXT3": 16, b"DXT4": 16, b"DXT5": 16,

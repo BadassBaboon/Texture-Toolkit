@@ -21,6 +21,7 @@
 #include "Config.h"
 #include "Logger.h"
 #include "DDSLoader.h"
+#include "PathUtil.h"
 
 #include <imgui.h>
 #include <backends/imgui_impl_dx11.h>
@@ -36,8 +37,6 @@
 #include <filesystem>
 #include <string>
 #include <vector>
-
-HMODULE g_our_module = nullptr;
 
 using namespace TextureToolkit;
 
@@ -228,7 +227,7 @@ int main(int argc, char **argv)
             reshade::api::subresource_data sub;
             sub.data = big.data();
             sub.row_pitch = s.w * 2 * 4;
-            save_dds_multi_mip((inject / name).string(), desc, { sub }, 1, 1);
+            save_dds_multi_mip(path_utf8(inject / name), desc, { sub }, 1, 1);
         }
         else if (s.role == Spec::BrokenInject)
         {
@@ -298,7 +297,7 @@ int main(int argc, char **argv)
     for (int f = 0; f < frames; ++f)
     {
         io.DeltaTime = 1.0f / 60.0f;
-        Sleep(16); // the startup banner times itself by the wall clock, not by frames
+        Sleep(16); // the startup banner times itself by the real clock, not by frames
         for (const Action &a : actions)
         {
             if (a.kind == Action::Move && a.frame == f)

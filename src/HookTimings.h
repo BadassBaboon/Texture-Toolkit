@@ -20,8 +20,13 @@ namespace TextureToolkit::HookTimings
     };
 
     bool enabled();
-    uint64_t now();           // real time, immune to a game hooking its own timers
+    uint64_t now();           // real time, immune to a game hooking its own timers; never goes back
     double ticks_per_ms();    // units of now()
+
+    // The same clock in whole milliseconds, for everything that times itself: key repeat, the
+    // startup banner, the panel's frame time, eviction. GetTickCount64 and QueryPerformanceCounter
+    // are what a frame-rate unlocker hooks, and one sped both up 18x in NFS: The Run.
+    uint64_t now_ms();
     void record(Site site, uint64_t start);
 
     // Call once per presented frame, from Present. Tracks frame times, and every few seconds

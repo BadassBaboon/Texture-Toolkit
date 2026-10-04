@@ -4,7 +4,6 @@
 #include <MinHook.h>
 #include <string>
 #include <mutex>
-#include <unordered_map>
 #include "Logger.h"
 
 namespace TextureToolkit
@@ -43,7 +42,6 @@ namespace TextureToolkit
                 Logger::get().error("[HookManager] Failed to enable hook at address " + ptr_hex(target) + ", MH_STATUS: " + std::to_string(status));
                 return false;
             }
-            m_active_hooks[target] = nullptr;
             return true;
         }
 
@@ -68,8 +66,6 @@ namespace TextureToolkit
                 Logger::get().error("[HookManager] Failed to enable hook at address " + ptr_hex(target) + ", MH_STATUS: " + std::to_string(status));
                 return false;
             }
-
-            m_active_hooks[target] = reinterpret_cast<void *>(original);
             return true;
         }
 
@@ -79,6 +75,5 @@ namespace TextureToolkit
 
         std::mutex m_mutex;
         bool m_initialized = false;
-        std::unordered_map<void *, void *> m_active_hooks;
     };
 }

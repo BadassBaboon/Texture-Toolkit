@@ -8,11 +8,11 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT"></a>
 </p>
 
-Texture Toolkit dumps and replaces textures at runtime in 32-bit and 64-bit Direct3D 9 and Direct3D 11 games on Windows. It loads as an `.asi` plugin through Ultimate ASI Loader, or as a proxy DLL renamed to `dinput8.dll`, `d3d9.dll`, or `dxgi.dll`. An in-game panel lists the textures in the current scene, shows their format and memory size, and lets you dump or replace them without restarting. See [GAMES.md](GAMES.md) for the games it has been run in; that list records what has been tried, not what is supported, and any Direct3D 9 or Direct3D 11 game is in scope.
+Texture Toolkit dumps and replaces textures at runtime in 32-bit and 64-bit Direct3D 9 and Direct3D 11 games on Windows. It is an `.asi` plugin, loaded by [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader) (which itself goes in the game folder as `dinput8.dll`, `d3d9.dll`, `dxgi.dll` or another of its supported names). An in-game panel lists the textures in the current scene, shows their format and memory size, and lets you dump or replace them without restarting. See [GAMES.md](GAMES.md) for the games it has been run in; that list records what has been tried, not what is supported, and any Direct3D 9 or Direct3D 11 game is in scope.
 
 ## How it works
 
-Texture Toolkit hooks the calls that create and upload textures: `LockRect`/`UnlockRect` on D3D9, and `Map`/`Unmap` plus `CreateTexture2D` on D3D11. When a texture's pixels are uploaded it computes a 64-bit hash over that data and writes the hash onto the resource as D3D private data. At draw time it reads the hash back from whatever texture the game binds (`SetTexture` on D3D9, `PSSetShaderResources` on D3D11); if a replacement exists for that hash, it substitutes it before the draw.
+Texture Toolkit hooks the calls that create and upload textures: `LockRect`/`UnlockRect` on D3D9, and `Map`/`Unmap` plus `CreateTexture2D` on D3D11. When a texture's pixels are uploaded it computes a 64-bit hash over that data and writes the hash onto the resource as D3D private data. At draw time it reads the hash back from whatever texture the game binds (`SetTexture` on D3D9; `PSSetShaderResources`, `VSSetShaderResources` and `CSSetShaderResources` on D3D11); if a replacement exists for that hash, it substitutes it before the draw.
 
 Storing the hash on the resource, instead of tracking raw pointers, keeps a replacement attached to the right texture after the driver frees an address and reuses it for something else. On D3D9 the tool also follows `UpdateTexture`, so art that the game loads into a `SYSTEMMEM` texture and copies into a `DEFAULT`-pool texture is matched by the copy the game actually renders.
 
@@ -24,10 +24,12 @@ Storing the hash on the resource, instead of tracking raw pointers, keeps a repl
 - Direct3D 9 and Direct3D 11, both x86 and x64.
 - Textures that arrive through D3DX (`D3DXCreateTextureFromFile*`) are tracked as well as those uploaded with `LockRect`. Many Direct3D 9 games never lock a texture themselves, and hand the file to D3DX instead. Only a `d3dx9_*.dll` the game has already loaded is hooked.
 - DDS replacement: put `<hash>.dds` in `TT/inject` and it loads without a restart.
+- Texture mods: any other folder in `TT` is a mod, with a switch and a load order on the panel. See [Texture mods](#texture-mods).
 - Mip handling: a replacement is created with the mip count its own file carries. A single-level file replacing a mipmapped texture has its chain filled in when the format is uncompressed, and loads at its top level with a warning when it is not.
 - Dumping to `TT/dump` as `.dds`, with the full mip chain: automatically on load, one at a time from the panel, or every tracked texture at once.
 - 64-bit content hashing, so two identical textures share one hash and one replacement. The hash covers the texture's tightly-packed rows, not the driver's row padding, so a hash means the same thing on every machine and an `inject` folder can be shared as a mod.
 - Special K texture packs load unchanged: files named the way Special K names them (eight hex digits, the CRC-32C of the top mip) are recognised alongside our own, and show as "SK Injected" in the panel.
+- Blink in game: the texture selected in the panel flashes magenta in the game, so whatever it is drawn on can be found by eye.
 - Input isolation and a software cursor, so the game stops reading the mouse and keyboard while the panel is open.
 
 ## The in-game panel
@@ -70,7 +72,7 @@ Match the build to the game: a 32-bit game needs the x86 build.
 
 Download the latest `.asi` from the [releases page](https://github.com/BadassBaboon/Texture-Toolkit/releases/latest). Both architectures are attached to every release and are built by CI from the tagged commit.
 
-1. Copy `TextureToolkit-x86.asi` (32-bit games) or `TextureToolkit-x64.asi` (64-bit games) into the game folder, or into a `plugins/` or `scripts/` folder when using Ultimate ASI Loader. To load it as a proxy instead, rename it to `dinput8.dll`, `d3d9.dll`, or `dxgi.dll`.
+1. Install [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader) for the game if it does not have it already, then copy `TextureToolkit-x86.asi` (32-bit games) or `TextureToolkit-x64.asi` (64-bit games) into the game folder, or into its `plugins/` or `scripts/` folder. Texture Toolkit exports nothing a game imports, so it cannot be renamed into a proxy DLL itself; the ASI loader is that proxy.
 2. Launch the game. Texture Toolkit writes `TextureToolkit.ini` and its log next to the `.asi`, and creates a `TT/` folder next to the executable containing `dump/`, `inject/`, and `imgui.ini`.
 3. Press `INSERT` to open the panel.
 
@@ -101,13 +103,11 @@ Verbose=0
 - `FilterSmallTextures`: ignore textures under 16x16.
 - `ShowCurrentFrameOnly`: list only textures drawn in the current scene.
 - `HighlightSelected`: blink the texture selected in the panel magenta, in the game (the inspector's "Blink in game").
-- `AcceptSpecialKNames`: also load files named the way Special K names them. Our own naming always wins when both exist for the same texture.
+- `AcceptSpecialKNames`: also load files named the way Special K names them. Where both namings exist for the same texture, the file from the source higher in the [load order](#texture-mods) is used; within one folder, our own naming wins.
 - `ShowOSDBanner`: show the startup banner.
-- `Verbose`: write per-texture debug lines to the log; leave off for normal use, since it slows the game. It also writes a `[Timing]` line every five seconds: the average frame time and how many frames hitched (took over twice the usual time, and over 20 ms), and for each hook how long Texture Toolkit's own work in it took (calls, total, average, worst), so a stutter can be traced to us or ruled out. It can be switched from the panel's Diagnostics page.
+- `Verbose`: write per-texture debug lines to the log; leave off for normal use, since it slows the game. It also writes a `[Timing]` line every five seconds: the average frame time and how many frames hitched (took over twice the usual time, and over 20 ms), and for each hook how long Texture Toolkit's own work in it took (calls, total, average, worst), so a stutter can be traced to us or ruled out. While a texture blinks in the game, a `[Blink]` line each second says how often the game drew it. It can be switched from the panel's Diagnostics page.
 
-Flipping a switch in the panel writes its new value back to this file, one key at a time, so comments and anything else you add by hand are kept. The mod load order and
-any mod you switch on or off from the panel are kept in two more sections, `[Mods]` and
-`[ModEnabled]`; see [Texture mods](#texture-mods).
+Flipping a switch in the panel writes its new value back to this file, one key at a time, so comments and anything else you add by hand are kept. The mod load order and any mod you switch on or off from the panel are kept in two more sections, `[Mods]` and `[ModEnabled]`; see [Texture mods](#texture-mods).
 
 ## Texture mods
 
@@ -231,6 +231,8 @@ new textures moddable -- it can never change a hash that already exists.
 - A DirectX 8 game run through a `d3d8to9` wrapper renders as Direct3D 9, so the overlay appears, but its textures stay invisible. The wrapper feeds pixel data into the D3D9 textures through an internal path that never calls a `LockRect`, `UpdateSurface`, `UpdateTexture`, or `StretchRect` we can hook, so there is nothing to hash. Capturing those would require hooking Direct3D 8 directly, which is not implemented. With `Verbose=1` the log fills with `Hooked_CreateTexture` lines and never a `Tracked` line.
 - Injection reads `.dds` only. Dumps are written as `.dds`.
 - A D3D9 texture in the default pool cannot be read back with `LockRect`, so the panel's Dump button fails on those; Auto-dump captures them from the upload instead.
+- The Special K checksum is taken as a texture loads, and only while Special K-named files are present. A Special K pack added to a session that had none applies to textures loaded after it, so restart the game, or reach a point where it reloads its textures.
+- Blink in game shows nothing for art the game draws once into an image it then reuses (some HUDs and menus); the verbose log says so. The magenta is tinted by whatever colour the game draws the texture with, so text that is drawn yellow flashes red.
 - Mips cannot be generated for block-compressed replacements; a single-level compressed file loads at its top level and aliases in motion. See [Mip levels](#mip-levels) for why this is not done automatically.
 
 ## License

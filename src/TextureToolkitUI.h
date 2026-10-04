@@ -27,6 +27,10 @@ namespace TextureToolkit
         // state rather than window messages. Called by feed_overlay_mouse.
         static void feed_overlay_keyboard(HWND hwnd);
 
+        // Replaces the frame time the Win32 backend measured with one from the real clock. Call
+        // right after ImGui_ImplWin32_NewFrame.
+        static void set_real_delta_time();
+
         // Puts the OS cursor's display count back to what it was when the panel opened. Call
         // every frame while the panel is closed; it does nothing unless feed_overlay_mouse
         // changed the count.

@@ -103,17 +103,16 @@ namespace TextureToolkit
         }
     }
 
-    // Total GPU byte size of a texture across all its mip levels.
-    static uint32_t compute_texture_bytes(reshade::api::format fmt, uint32_t w, uint32_t h, uint32_t mips)
+    // Total GPU byte size of a texture across all its mip levels. 64-bit: a 16384 x 16384 float
+    // texture is past what 32 bits hold.
+    static uint64_t compute_texture_bytes(reshade::api::format fmt, uint32_t w, uint32_t h, uint32_t mips)
     {
-        uint32_t total = 0;
+        uint64_t total = 0;
         for (uint32_t m = 0; m < (mips == 0 ? 1u : mips); ++m)
         {
-            uint32_t rp = reshade::api::format_row_pitch(fmt, w);
-            uint32_t sp = reshade::api::format_slice_pitch(fmt, rp, h);
-            if (sp == 0)
-                sp = rp * h;
-            total += sp;
+            const uint64_t rp = reshade::api::format_row_pitch(fmt, w);
+            const uint64_t rows = reshade::api::format_slice_pitch(fmt, 1, h); // rows, or block rows
+            total += rp * (rows != 0 ? rows : h);
             w = (std::max)(1u, w / 2);
             h = (std::max)(1u, h / 2);
         }
@@ -313,15 +312,12 @@ namespace TextureToolkit
         }
     }
 
-    static uint64_t calculate_d3d9_pixel_hash(const void *pixel_data, UINT width, UINT height, D3DFORMAT format, UINT pitch)
+    // The tight rows the hash covers for a D3D9 texture of this format: bytes per row, and rows
+    // (block rows for the block-compressed formats). False for a format whose layout is unknown,
+    // which is then skipped rather than guessed at. Our hash and Special K's both walk exactly
+    // these rows, so they can never disagree about which bytes count.
+    static bool d3d9_tight_layout(D3DFORMAT format, UINT width, UINT height, UINT &tight_row, UINT &rows)
     {
-        if (pixel_data == nullptr || width == 0 || height == 0)
-            return 0;
-
-        const uint8_t *src = static_cast<const uint8_t *>(pixel_data);
-
-        // Hash tight rows only, so the lock pitch the driver happened to hand us never reaches
-        // the hash (see TextureHash.h). Block-compressed formats step a row of 4-pixel blocks.
         const uint32_t fmt4cc = static_cast<uint32_t>(format);
         const bool is_bc = (format == D3DFMT_DXT1 || format == D3DFMT_DXT2 || format == D3DFMT_DXT3 ||
                             format == D3DFMT_DXT4 || format == D3DFMT_DXT5 ||
@@ -332,14 +328,28 @@ namespace TextureToolkit
             // 8 bytes per 4x4 block for the one-channel/1-bit-alpha formats, 16 for the rest.
             const bool small_block = (format == D3DFMT_DXT1 ||
                                       fmt4cc == MAKEFOURCC('A','T','I','1') || fmt4cc == MAKEFOURCC('B','C','4','U'));
-            const UINT block_size = small_block ? 8 : 16;
-            const UINT tight_row = ((width + 3) / 4) * block_size;
-            const UINT rows = (height + 3) / 4;
-            return compute_hash64_rows(src, pitch, tight_row, rows);
+            tight_row = ((width + 3) / 4) * (small_block ? 8u : 16u);
+            rows = (height + 3) / 4;
+            return true;
         }
 
         const UINT bpp = d3d9_bytes_per_pixel(format);
         if (bpp == 0)
+            return false;
+        tight_row = width * bpp;
+        rows = height;
+        return true;
+    }
+
+    static uint64_t calculate_d3d9_pixel_hash(const void *pixel_data, UINT width, UINT height, D3DFORMAT format, UINT pitch)
+    {
+        if (pixel_data == nullptr || width == 0 || height == 0)
+            return 0;
+
+        // Hash tight rows only, so the lock pitch the driver happened to hand us never reaches
+        // the hash (see TextureHash.h).
+        UINT tight_row = 0, rows = 0;
+        if (!d3d9_tight_layout(format, width, height, tight_row, rows))
         {
             static int s_logged_unknown = 0;
             if (s_logged_unknown < 8)
@@ -351,37 +361,18 @@ namespace TextureToolkit
             }
             return 0;
         }
-
-        return compute_hash64_rows(src, pitch, width * bpp, height);
+        return compute_hash64_rows(static_cast<const uint8_t *>(pixel_data), pitch, tight_row, rows);
     }
 
     // Special K's name for the same D3D9 texture: CRC-32C over exactly the rows our own hash walks.
-    // Kept beside calculate_d3d9_pixel_hash so the two can never disagree about which bytes count.
     static uint32_t calculate_d3d9_sk_hash(const void *pixel_data, UINT width, UINT height, D3DFORMAT format, UINT pitch)
     {
         if (pixel_data == nullptr || width == 0 || height == 0)
             return 0;
-
-        const uint8_t *src = static_cast<const uint8_t *>(pixel_data);
-        const uint32_t fmt4cc = static_cast<uint32_t>(format);
-        const bool is_bc = (format == D3DFMT_DXT1 || format == D3DFMT_DXT2 || format == D3DFMT_DXT3 ||
-                            format == D3DFMT_DXT4 || format == D3DFMT_DXT5 ||
-                            fmt4cc == MAKEFOURCC('A','T','I','1') || fmt4cc == MAKEFOURCC('B','C','4','U') ||
-                            fmt4cc == MAKEFOURCC('A','T','I','2') || fmt4cc == MAKEFOURCC('B','C','5','U'));
-
-        if (is_bc)
-        {
-            const bool small_block = (format == D3DFMT_DXT1 ||
-                                      fmt4cc == MAKEFOURCC('A','T','I','1') || fmt4cc == MAKEFOURCC('B','C','4','U'));
-            const UINT block_size = small_block ? 8 : 16;
-            return compute_crc32c_rows(src, pitch, ((width + 3) / 4) * block_size, (height + 3) / 4);
-        }
-
-        const UINT bpp = d3d9_bytes_per_pixel(format);
-        if (bpp == 0)
+        UINT tight_row = 0, rows = 0;
+        if (!d3d9_tight_layout(format, width, height, tight_row, rows))
             return 0;
-
-        return compute_crc32c_rows(src, pitch, width * bpp, height);
+        return compute_crc32c_rows(static_cast<const uint8_t *>(pixel_data), pitch, tight_row, rows);
     }
 
     // Human-readable DXGI_FORMAT name. Covers the formats games actually ship textures in;
@@ -557,9 +548,10 @@ namespace TextureToolkit
         m_readback_queue.clear();
     }
 
-    // Special K's "highlight selected texture": binding nothing in the texture's place is legal in
-    // both APIs (the shader samples zero), so the blink cannot fault a draw. Real time, so a game
-    // whose timers are sped up does not strobe it.
+    // Special K's "highlight selected texture", in magenta: for half of each 600 ms the selected
+    // texture is swapped for the magenta stand-in (or for nothing, where magenta cannot stand in;
+    // see magenta_stand_in9 and resolve_srv11_slow). Real time, so a game whose timers are sped up
+    // does not strobe it.
     bool TextureManager::hidden_by_highlight(uint64_t hash) const
     {
         const uint64_t target = m_highlight_hash.load(std::memory_order_relaxed);
@@ -1012,7 +1004,7 @@ namespace TextureToolkit
         flush_seen_locked();
         m_frame_count++;
         m_frame_count_atomic.store(m_frame_count, std::memory_order_relaxed);
-        const uint64_t now_ticks = GetTickCount64();
+        const uint64_t now_ticks = HookTimings::now_ms();
 
         m_active_frame_hashes = m_current_frame_hashes;
         m_current_frame_hashes.clear();
@@ -1057,14 +1049,9 @@ namespace TextureToolkit
             const bool stale = d.last_seen_ticks + kEvictAgeMs < now_ticks;
             // A texture with an inject file waiting for it stays in the list under either naming;
             // dropping the SK-named ones would make an SK pack's pending entries disappear.
-            const bool has_inject_file =
-                m_injected_files.find(it->first) != m_injected_files.end() ||
-                (accept_sk_names && d.sk_hash != 0 &&
-                 m_sk_injected_files.find(d.sk_hash) != m_sk_injected_files.end());
-
             const bool keep = d.replacement_handle != 0 ||
                               it->first == m_preview_target_hash ||
-                              has_inject_file;
+                              has_inject_file(it->first, d.sk_hash);
 
             if (stale && !keep)
                 it = m_tracked_textures.erase(it);
@@ -1533,6 +1520,13 @@ namespace TextureToolkit
         return orig;
     }
 
+    // Whether an inject file exists for this texture under either naming. Caller MUST hold m_mutex.
+    bool TextureManager::has_inject_file(uint64_t hash, uint32_t sk_hash) const
+    {
+        return m_injected_files.find(hash) != m_injected_files.end() ||
+               (accept_sk_names && sk_hash != 0 && m_sk_injected_files.find(sk_hash) != m_sk_injected_files.end());
+    }
+
     // Flags a drawn texture that has an inject file but no live replacement yet. Cheap: this runs
     // inside the game's draw call, so it only records the hash. Caller MUST hold m_mutex.
     void TextureManager::note_pending_injection(uint64_t hash, bool is_dx11)
@@ -1541,8 +1535,15 @@ namespace TextureToolkit
             return;
         if (m_failed_injections.find(hash) != m_failed_injections.end())
             return;
+        // Special K-named files too. Only our own naming was looked for, so after a Reload, or a
+        // mod switched on or off, every replacement that came from an SK-named file stayed off
+        // until the game happened to upload that texture again.
         if (m_injected_files.find(hash) == m_injected_files.end())
-            return;
+        {
+            auto t = m_tracked_textures.find(hash);
+            if (t == m_tracked_textures.end() || !has_inject_file(hash, t->second.sk_hash))
+                return;
+        }
 
         m_pending_injections[hash] = is_dx11;
     }
@@ -1564,9 +1565,8 @@ namespace TextureToolkit
             const bool is_dx11 = pit->second;
             m_pending_injections.erase(pit);
 
-            auto fit = m_injected_files.find(hash);
             auto tit = m_tracked_textures.find(hash);
-            if (fit == m_injected_files.end() || tit == m_tracked_textures.end())
+            if (tit == m_tracked_textures.end())
                 continue;
 
             const bool have = is_dx11
@@ -1586,6 +1586,8 @@ namespace TextureToolkit
             // The same choice as at upload: a higher mod's Special K-named file can outrank it.
             bool via_sk_name = false;
             const std::filesystem::path path = find_injection_path(hash, details.sk_hash, &via_sk_name);
+            if (path.empty())
+                continue; // the file went away with a rescan since it was flagged
             details.injected_via_sk_name = via_sk_name;
             const bool ok = is_dx11
                 ? build_replacement11(dev11, hash, path, details.mip_levels, details)
@@ -1704,7 +1706,7 @@ namespace TextureToolkit
     // Folds one upload into a resource's history and decides whether it has become a stream.
     static void note_upload_change(UploadStats &stats, bool have_stats, uint64_t hash, UINT width, UINT height)
     {
-        const uint64_t now = GetTickCount64();
+        const uint64_t now = HookTimings::now_ms();
 
         if (have_stats && hash != stats.last_hash)
         {
@@ -1792,10 +1794,31 @@ namespace TextureToolkit
             DXGI_FORMAT ddx = d3d9_format_to_dxgi(format);
             details.data_size = (ddx != DXGI_FORMAT_UNKNOWN)
                 ? compute_texture_bytes(static_cast<reshade::api::format>(ddx), width, height, original_levels)
-                : width * height * 4;
+                : static_cast<uint64_t>(width) * height * 4;
         }
         details.last_seen_frame = m_frame_count;
-        details.last_seen_ticks = GetTickCount64();
+        details.last_seen_ticks = HookTimings::now_ms();
+
+        // A replacement made on a device the game has since replaced cannot be bound on this one:
+        // retire it, and build it again below for the device this texture belongs to. `device` is
+        // the texture's own (see D3D9Hook's device_of), the same way the replacement is asked.
+        {
+            auto rit = m_d3d9_replacements.find(hash);
+            if (rit != m_d3d9_replacements.end() && rit->second != nullptr)
+            {
+                IDirect3DDevice9 *owner = nullptr;
+                if (SUCCEEDED(rit->second->GetDevice(&owner)) && owner != nullptr)
+                {
+                    owner->Release();
+                    if (owner != device)
+                    {
+                        m_retired_replacements.push_back(rit->second);
+                        m_retire_after_frame = m_frame_count + 2;
+                        m_d3d9_replacements.erase(rit);
+                    }
+                }
+            }
+        }
 
         bool via_sk_name = false;
         std::filesystem::path inject_path = find_injection_path(hash, sk_hash, &via_sk_name);
@@ -2212,7 +2235,34 @@ namespace TextureToolkit
         details.usage = static_cast<uint32_t>(orig_desc.Usage);
         details.data_size = compute_texture_bytes(reshade_fmt, width, height, details.mip_levels);
         details.last_seen_frame = m_frame_count;
-        details.last_seen_ticks = GetTickCount64();
+        details.last_seen_ticks = HookTimings::now_ms();
+
+        // See the Direct3D 9 path: a replacement from a replaced device is rebuilt for this one.
+        // Both sides are asked for their device the same way, by the resource: `device` can be a
+        // wrapper's (ReShade's, say) while a view it created reports the device underneath, and
+        // comparing those would rebuild the replacement on every upload.
+        {
+            auto rit = m_d3d11_replacements.find(hash);
+            if (rit != m_d3d11_replacements.end() && rit->second != nullptr)
+            {
+                ID3D11Device *owner = nullptr, *mine = nullptr;
+                rit->second->GetDevice(&owner);
+                resource->GetDevice(&mine);
+                if (mine != nullptr)
+                    mine->Release();
+                if (owner != nullptr)
+                {
+                    owner->Release();
+                    if (mine != nullptr && owner != mine)
+                    {
+                        m_bind_generation.fetch_add(1, std::memory_order_relaxed); // cached binds hold it
+                        m_retired_replacements.push_back(rit->second);
+                        m_retire_after_frame = m_frame_count + 2;
+                        m_d3d11_replacements.erase(rit);
+                    }
+                }
+            }
+        }
 
         bool via_sk_name = false;
         std::filesystem::path inject_path = find_injection_path(hash, sk_hash, &via_sk_name);
@@ -2233,7 +2283,6 @@ namespace TextureToolkit
             if (prev != m_tracked_textures.end())
                 carry_replacement_fields(details, prev->second);
         }
-
 
         m_tracked_textures[hash] = details;
 
@@ -2385,7 +2434,7 @@ namespace TextureToolkit
             // apply, and that one never will until it is fixed and Reload is pressed.
             if (pair.second.replacement_handle != 0)
                 pair.second.status = TextureStatus::INJECTED;
-            else if (m_injected_files.find(pair.first) != m_injected_files.end())
+            else if (has_inject_file(pair.first, pair.second.sk_hash))
                 pair.second.status = (m_failed_injections.find(pair.first) != m_failed_injections.end())
                     ? TextureStatus::FAILED : TextureStatus::PENDING;
 
@@ -2463,8 +2512,6 @@ namespace TextureToolkit
 
         // levels is slice-major: mip_levels entries per array slice, so the mip index restarts
         // at the top of every slice.
-        if (array_size == 0)
-            array_size = 1;
         const size_t mip_levels = levels.size() / array_size;
         if (mip_levels == 0)
             return {};
@@ -2534,10 +2581,20 @@ namespace TextureToolkit
 
     std::string TextureManager::dump_resource11(uint64_t hash, ID3D11Resource *res)
     {
-        ID3D11Device *device = D3D11Hook::get().get_device();
-        ID3D11DeviceContext *ctx = D3D11Hook::get().get_context();
-        if (device == nullptr || ctx == nullptr || res == nullptr)
+        if (res == nullptr)
             return {};
+        // The resource's own device: a copy between devices fails. The references are dropped
+        // straight away, since the resource keeps its device alive and the device its context.
+        ID3D11Device *device = nullptr;
+        res->GetDevice(&device);
+        if (device == nullptr)
+            return {};
+        device->Release();
+        ID3D11DeviceContext *ctx = nullptr;
+        device->GetImmediateContext(&ctx);
+        if (ctx == nullptr)
+            return {};
+        ctx->Release();
 
         std::string path;
         ID3D11Texture2D *tex2d = nullptr;
@@ -2634,6 +2691,9 @@ namespace TextureToolkit
         if (SUCCEEDED(tex->GetLevelDesc(0, &sd)))
         {
             DXGI_FORMAT dxgi = d3d9_format_to_dxgi(sd.Format);
+            if (dxgi == DXGI_FORMAT_UNKNOWN)
+                Logger::get().warn("[TextureManager] Cannot dump 0x" + format_hash_hex(hash) + ": its format (" +
+                                   d3d9_format_to_string(sd.Format) + ") has no DDS equivalent here.");
 
             ScopedFlag no_reentry(D3D9Hook::s_inside_injection);
 
@@ -2679,7 +2739,9 @@ namespace TextureToolkit
             else if (dxgi != DXGI_FORMAT_UNKNOWN && (sd.Usage & D3DUSAGE_RENDERTARGET))
             {
                 // Render target: copy to a system-memory surface, then read that back.
-                IDirect3DDevice9 *dev = D3D9Hook::get().get_device();
+                IDirect3DDevice9 *dev = nullptr;
+                if (SUCCEEDED(tex->GetDevice(&dev)) && dev != nullptr)
+                    dev->Release(); // the texture keeps its device alive
                 IDirect3DSurface9 *src = nullptr;
                 IDirect3DSurface9 *dst = nullptr;
                 if (dev != nullptr && SUCCEEDED(tex->GetSurfaceLevel(0, &src)) && src != nullptr)
@@ -2789,7 +2851,9 @@ namespace TextureToolkit
 
         if (!path.empty())
         {
-            d.status = TextureStatus::DUMPED;
+            // Dumping an injected texture must not hide that it is injected.
+            if (d.status != TextureStatus::INJECTED)
+                d.status = TextureStatus::DUMPED;
             d.filepath_dumped = path;
             Logger::get().info("[TextureManager] Dumped 0x" + format_hash_hex(hash) + " to " + path);
             return true;
@@ -2798,7 +2862,7 @@ namespace TextureToolkit
         if (!attempted)
             Logger::get().warn("[TextureManager] Cannot dump 0x" + format_hash_hex(hash) + ": it is not currently on screen. Select it while it is being drawn, then Dump.");
         else
-            Logger::get().warn("[TextureManager] Cannot dump 0x" + format_hash_hex(hash) + ": this texture cannot be read back on demand (D3D9 default-pool). Turn on Auto-dump to capture it from the upload at load time.");
+            Logger::get().warn("[TextureManager] Cannot dump 0x" + format_hash_hex(hash) + ": this texture cannot be read back on demand (a D3D9 default-pool texture, or a format above). Turn on Auto-dump to capture it from the upload at load time.");
         return false;
     }
 

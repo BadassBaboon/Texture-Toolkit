@@ -45,8 +45,7 @@ namespace TextureToolkit::UI
 
     enum class Icon
     {
-        Grid, Folder, Gear, Pulse, Search, Copy, Download, Refresh, Camera, Close, Layers, Info,
-        ChevronUp, ChevronDown,
+        Grid, Folder, Gear, Pulse, Search, Close, Layers, Info, ChevronUp, ChevronDown,
     };
     void draw_icon(ImDrawList *dl, Icon icon, ImVec2 center, float size, ImU32 col);
 

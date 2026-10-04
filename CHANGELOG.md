@@ -91,8 +91,9 @@ them, so every existing mod keeps working.
   verbose logging off it costs one flag check per call. Measured with the system clock, not the
   game's: a frame-rate unlocker that hooks the game's timers ran its clock about 18x fast in NFS:
   The Run, which would otherwise have made nonsense of every figure. When the game's clock is off
-  like that, the log says so once. Suggested by the diagnostics build in Aqvilinus's fork.  ###
-  Changed
+  like that, the log says so once. Suggested by the diagnostics build in Aqvilinus's fork.
+
+### Changed
 - **A redesigned panel.** A sidebar splits it into Textures, Mod files, Settings and Diagnostics,
   with figures for tracked, injected, not applied and dumped textures, switches in place of
   checkboxes, statuses as coloured labels, and Segoe UI in place of the built-in pixel font
@@ -120,10 +121,41 @@ them, so every existing mod keeps working.
 - The inspector previews on a checkerboard, so transparent pixels read as transparent.
 
 ### Fixed
-- **The panel's own textures were listed as the game's.** The font atlas and the logo went through
-  the same hooks as the game's textures, so they appeared in the texture list (a 512x128 entry) and
-  could be dumped, replaced, or picked for Blink in game, which then blinked the whole panel. The
-  overlay's own creation and drawing now bypass the hooks entirely.
+- **The panel's own font was listed as one of the game's textures.** ImGui's font atlas went
+  through the same hooks as the game's textures, so it appeared in the texture list (a 512x128
+  entry) and could be dumped, replaced, or picked for Blink in game, which then blinked the whole
+  panel. The overlay's own creation and drawing now bypass the hooks entirely.
+- **Special K-named replacements stayed off after Reload, or after switching any mod on or off.**
+  Both drop every replacement and rebuild each one the next time its texture is drawn, but only
+  files named our way were looked for, so a replacement from a Special K-named file came back only
+  when the game happened to upload that texture again. A Special K file waiting to apply also
+  showed as Original instead of Pending.
+- **Timers ran on the game's clock.** A frame-rate unlocker that speeds up the game's timers (one
+  ran them 18x and 250x fast in NFS: The Run) made a key typed into the panel repeat at once, the
+  startup banner vanish in a blink, tooltips and the switches' animation jump, a double-click all
+  but impossible, and the checks for unused and constantly rewritten textures misjudge their age.
+  All of them use the real clock now, as the timing reports already did.
+- **A game that replaced its Direct3D 9 device, instead of resetting it, lost the panel.** The
+  overlay kept drawing with the old device, and replacements built on it were bound to the new
+  one. The panel moves to the new device once the old one stops presenting, and a replacement
+  made on a device that is gone is rebuilt for the new one when its texture loads again, on
+  Direct3D 11 too. Dumps and render-target read-backs use the texture's own device.
+- Dumping an injected texture from the inspector showed it as Dumped, hiding that it is injected;
+  the other dump paths already kept the status.
+- A dump that could not be written in full (a full disk, say) was reported as written and left a
+  truncated `.dds` behind. It is reported as failed and the partial file removed. A volume (3D)
+  `.dds` in `inject` was read as if it were 2D, mips from the wrong place; it is refused with a
+  reason now.
+- A first-run `TextureToolkit.ini` is written as UTF-16, so a mod folder (or `ResourceRoot`) named
+  outside the system code page is no longer saved as question marks and forgotten. A
+  `ResourceRoot` longer than 260 characters was cut short, and an ini folder that could not be
+  read could throw at startup.
+- `tools/rename_legacy_hashes.py` used the wrong pixel size for R16G16 and R8G8 dumps and did not
+  know A8, B5G6R5 or B5G5R5A1, which would have produced wrong names for those textures.
+- The texture memory figure could wrap around on a very large texture.
+- The README described renaming the `.asi` into a `dinput8.dll`, `d3d9.dll` or `dxgi.dll` proxy.
+  It exports nothing a game imports, so that never worked: Ultimate ASI Loader is the proxy, and
+  loads the `.asi`.
 - **A Direct3D 9 preview showing one flat colour instead of the texture.** The overlay drew with
   whatever minimum mip level, LOD bias or texture-coordinate transform the game had left on the
   first texture stage, so a mipmapped texture could preview as its smallest mip. Those are now set

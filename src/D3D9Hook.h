@@ -110,13 +110,16 @@ namespace TextureToolkit
         static HRESULT STDMETHODCALLTYPE Hooked_SurfaceUnlockRect(IDirect3DSurface9 *surface);
 
         void init_imgui(IDirect3DDevice9 *device);
+        void rebind_imgui(IDirect3DDevice9 *device);
         void render_imgui(IDirect3DDevice9 *device);
 
         std::mutex m_mutex;
         bool m_initialized = false;
         bool m_imgui_initialized = false;
 
-        IDirect3DDevice9 *m_device = nullptr;
+        IDirect3DDevice9 *m_device = nullptr;       // the device that presented last
+        IDirect3DDevice9 *m_imgui_device = nullptr; // the device the overlay draws with
+        int m_other_device_frames = 0;
         HWND m_hwnd = nullptr;
 
         Direct3DCreate9_t m_orig_direct3d_create9 = nullptr;

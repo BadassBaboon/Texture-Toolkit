@@ -78,6 +78,17 @@ namespace TextureToolkit
         return buf;
     }
 
+    // The device a resource belongs to, which is the one anything made for it has to be made on.
+    // The reference GetDevice takes is dropped at once: the resource holds its own on the device
+    // for as long as it lives, so the pointer stays good while the caller has the resource.
+    static IDirect3DDevice9 *device_of(IDirect3DResource9 *resource)
+    {
+        IDirect3DDevice9 *device = nullptr;
+        if (resource != nullptr && SUCCEEDED(resource->GetDevice(&device)) && device != nullptr)
+            device->Release();
+        return device;
+    }
+
     // Written once, when the device is intercepted. A game whose art never reaches a lock is
     // almost always going through something: a d3d8-to-d3d9 wrapper, a D3DX redistributable, or
     // another overlay that got to the vtable first. Naming the graphics modules actually loaded
@@ -98,13 +109,11 @@ namespace TextureToolkit
         std::string found;
         for (size_t i = 0; i < count; ++i)
         {
-            char path[MAX_PATH] = {};
-            if (GetModuleFileNameA(modules[i], path, MAX_PATH) == 0)
+            const std::filesystem::path module(module_file_name(modules[i]));
+            if (module.empty())
                 continue;
-
-            const char *slash = strrchr(path, '\\');
-            std::string name = (slash != nullptr) ? (slash + 1) : path;
-            const std::string full_path = path;
+            const std::string name = path_utf8(module.filename());
+            const std::string full_path = path_utf8(module);
 
             std::string lower;
             lower.reserve(name.size());
@@ -332,7 +341,7 @@ namespace TextureToolkit
             if (pDirect3DCreate9 != nullptr)
             {
                 HookManager::get().create_hook(pDirect3DCreate9, &Hooked_Direct3DCreate9, reinterpret_cast<void **>(&m_orig_direct3d_create9));
-                IATHook::hook_all_modules("d3d9.dll", "Direct3DCreate9", &Hooked_Direct3DCreate9, reinterpret_cast<void **>(&m_orig_direct3d_create9));
+                IATHook::hook_game_exe("d3d9.dll", "Direct3DCreate9", &Hooked_Direct3DCreate9, reinterpret_cast<void **>(&m_orig_direct3d_create9));
                 Logger::get().info("[D3D9Hook] Direct3DCreate9 API & IAT hooks installed successfully.");
             }
 
@@ -340,7 +349,7 @@ namespace TextureToolkit
             if (pDirect3DCreate9Ex != nullptr)
             {
                 HookManager::get().create_hook(pDirect3DCreate9Ex, &Hooked_Direct3DCreate9Ex, reinterpret_cast<void **>(&m_orig_direct3d_create9_ex));
-                IATHook::hook_all_modules("d3d9.dll", "Direct3DCreate9Ex", &Hooked_Direct3DCreate9Ex, reinterpret_cast<void **>(&m_orig_direct3d_create9_ex));
+                IATHook::hook_game_exe("d3d9.dll", "Direct3DCreate9Ex", &Hooked_Direct3DCreate9Ex, reinterpret_cast<void **>(&m_orig_direct3d_create9_ex));
                 Logger::get().info("[D3D9Hook] Direct3DCreate9Ex API & IAT hooks installed successfully.");
             }
         }
@@ -506,14 +515,54 @@ namespace TextureToolkit
         ImGui::GetIO().IniFilename = ini_path_str.c_str();
 
         ImGui_ImplWin32_Init(m_hwnd);
-        // Every ImGui backend call runs with s_inside_injection set: the panel's own textures (the font
-        // atlas, the logo) and binds must not be tracked as the game's. They were, which put our font in the
-        // texture list and let Blink in game, aimed at it, blink the whole panel.
+        // Every ImGui backend call runs with s_inside_injection set: the panel's own textures (the
+        // font atlas) and binds must not be tracked as the game's. They were, which put our font in
+        // the texture list and let Blink in game, aimed at it, blink the whole panel. (The logo
+        // guards its own creation.)
         { ScopedFlag own_draw(s_inside_injection); ImGui_ImplDX9_Init(device); }
-        { ScopedFlag own_draw(s_inside_injection); Logo::create_d3d9(device); }
+        Logo::create_d3d9(device);
+        m_imgui_device = device;
 
         m_imgui_initialized = true;
         Logger::get().info("[D3D9Hook] Dear ImGui initialized natively for real game DirectX 9 device.");
+    }
+
+    void D3D9Hook::rebind_imgui(IDirect3DDevice9 *device)
+    {
+        Logger::get().info("[D3D9Hook] The game now presents with another device (" + ptr_hex(device) +
+                           "); moving the overlay to it.");
+
+        // Everything we drew with belongs to the old device: the backend's buffers and font, the
+        // logo, previews, the blink stand-in. The backend holds its own reference on the old device,
+        // which its Shutdown drops.
+        release_blink_stages();
+        TextureManager::get().release_d3d9_game_references();
+        {
+            ScopedFlag own_draw(s_inside_injection);
+            ImGui_ImplDX9_Shutdown();
+        }
+        Logo::release();
+
+        // A new device can come with a new window.
+        D3DDEVICE_CREATION_PARAMETERS params = {};
+        if (SUCCEEDED(device->GetCreationParameters(&params)) && params.hFocusWindow != nullptr &&
+            params.hFocusWindow != m_hwnd)
+        {
+            if (m_hwnd != nullptr && g_orig_wndproc != nullptr && IsWindow(m_hwnd))
+                SetWindowLongPtr(m_hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(g_orig_wndproc));
+            g_orig_wndproc = nullptr;
+            ImGui_ImplWin32_Shutdown();
+            m_hwnd = params.hFocusWindow;
+            g_orig_wndproc = reinterpret_cast<WNDPROC>(SetWindowLongPtr(m_hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(Hooked_WndProc)));
+            ImGui_ImplWin32_Init(m_hwnd);
+        }
+
+        {
+            ScopedFlag own_draw(s_inside_injection);
+            ImGui_ImplDX9_Init(device);
+        }
+        Logo::create_d3d9(device);
+        m_imgui_device = device;
     }
 
     void D3D9Hook::render_imgui(IDirect3DDevice9 *device)
@@ -525,6 +574,18 @@ namespace TextureToolkit
 
         if (!m_imgui_initialized)
             return;
+
+        if (device != m_imgui_device)
+        {
+            // Another device is presenting. A game that replaced its device (instead of Resetting
+            // it) has left the panel's own resources on the old one, so the panel moves over -- but
+            // only once the old one has stopped presenting for a while, so a short-lived extra
+            // device cannot make it hop back and forth.
+            if (++m_other_device_frames < 60)
+                return;
+            rebind_imgui(device);
+        }
+        m_other_device_frames = 0;
 
         uint32_t toggle_key = ConfigManager::get().get_config().hotkey;
         static bool s_key_was_down = false;
@@ -564,6 +625,7 @@ namespace TextureToolkit
 
         { ScopedFlag own_draw(s_inside_injection); ImGui_ImplDX9_NewFrame(); }
         ImGui_ImplWin32_NewFrame();
+        TextureToolkitUI::set_real_delta_time();
         ImGui::NewFrame();
 
         TextureToolkitUI::draw_ui();
@@ -639,11 +701,11 @@ namespace TextureToolkit
             if (!s_logged) { s_logged = true; Logger::get().info("[D3D9Hook] First Present() call; overlay renders through Present."); }
 
             if (s_capture_frame.exchange(false, std::memory_order_acq_rel))
-            Logger::get().info("[D3D9Hook] ---- end of frame capture, " +
-                               std::to_string(s_capture_count.load(std::memory_order_relaxed)) +
-                               " texture bind(s) this frame ----");
+                Logger::get().info("[D3D9Hook] ---- end of frame capture, " +
+                                   std::to_string(s_capture_count.load(std::memory_order_relaxed)) +
+                                   " texture bind(s) this frame ----");
 
-        s_present_count.fetch_add(1, std::memory_order_relaxed);
+            s_present_count.fetch_add(1, std::memory_order_relaxed);
             s_in_present = true;
             get().m_device = device;
             HookTimings::frame();
@@ -684,19 +746,25 @@ namespace TextureToolkit
 
     HRESULT STDMETHODCALLTYPE D3D9Hook::Hooked_SwapChainPresent(IDirect3DSwapChain9 *swapchain, const RECT *pSourceRect, const RECT *pDestRect, HWND hDestWindowOverride, const RGNDATA *pDirtyRegion, DWORD dwFlags)
     {
-        if (!s_in_present && get().m_device != nullptr)
+        // The swap chain's own device, not the one we saw last: a game that replaced its device
+        // would otherwise have the overlay drawn on one that may be gone.
+        IDirect3DDevice9 *device = nullptr;
+        if (!s_in_present && swapchain != nullptr && SUCCEEDED(swapchain->GetDevice(&device)) && device != nullptr)
+            device->Release(); // the swap chain keeps its device alive while it presents
+        if (device != nullptr)
         {
             static bool s_logged = false;
             if (!s_logged) { s_logged = true; Logger::get().info("[D3D9Hook] First SwapChain Present() call; overlay renders through the swap chain."); }
 
             s_present_count.fetch_add(1, std::memory_order_relaxed);
             s_in_present = true;
+            get().m_device = device;
             HookTimings::frame();
             {
                 HookTimings::Scope timing(HookTimings::Site::Overlay);
-                get().render_imgui(get().m_device);
+                get().render_imgui(device);
             }
-            get().refresh_blink_stages(get().m_device);
+            get().refresh_blink_stages(device);
             HRESULT hr = get().m_orig_swapchain_present(swapchain, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
             s_in_present = false;
             return hr;
@@ -904,7 +972,7 @@ namespace TextureToolkit
                 {
                     HookTimings::Scope timing(HookTimings::Site::D3D9Upload);
                     TextureManager::get().register_unmap_texture9(
-                        get().m_device,
+                        device_of(texture),
                         texture,
                         data.rect.pBits,
                         data.width,
@@ -1020,8 +1088,7 @@ namespace TextureToolkit
             pReplacement = TextureManager::get().get_replacement_texture9(pTexture);
             // Vertex texture fetch reads only a few float formats; Blink's magenta (A8R8G8B8)
             // is not one of them on most cards, so a vertex sampler gets nothing instead.
-            if (Stage >= D3DVERTEXTEXTURESAMPLER0 && pReplacement != nullptr && pReplacement != pTexture &&
-                TextureManager::get().is_highlight_texture9(pTexture) && TextureManager::get().is_magenta9(pReplacement))
+            if (Stage >= D3DVERTEXTEXTURESAMPLER0 && TextureManager::get().is_magenta9(pReplacement))
                 pReplacement = nullptr;
             set_blink_stage(Stage, TextureManager::get().is_highlight_texture9(pTexture) ? pTexture : nullptr);
             if (Stage < kBlinkStages)
@@ -1075,7 +1142,7 @@ namespace TextureToolkit
     // touching LockRect, so this is the only moment its pixels are visible to us.
     void D3D9Hook::register_loaded_texture(IDirect3DTexture9 *texture, const char *origin)
     {
-        if (texture == nullptr || get().m_device == nullptr)
+        if (texture == nullptr)
             return;
 
         D3DSURFACE_DESC desc = {};
@@ -1103,7 +1170,7 @@ namespace TextureToolkit
             if (FAILED(texture->GetPrivateData(TT_D3DX_SOURCE_CRC_GUID, &source_crc, &crc_size)) || crc_size != sizeof(source_crc))
                 source_crc = 0;
             TextureManager::get().register_unmap_texture9(
-                get().m_device, texture, rect.pBits, desc.Width, desc.Height, desc.Format,
+                device_of(texture), texture, rect.pBits, desc.Width, desc.Height, desc.Format,
                 static_cast<UINT>(rect.Pitch), source_crc);
         }
 
@@ -1382,7 +1449,7 @@ namespace TextureToolkit
                 {
                     HookTimings::Scope timing(HookTimings::Site::D3D9Upload);
                     TextureManager::get().register_unmap_texture9(
-                        get().m_device,
+                        device_of(texture),
                         texture,
                         data.rect.pBits,
                         data.width,

@@ -42,7 +42,7 @@ namespace TextureToolkit
         uint32_t repl_width = 0;     // injected replacement dimensions (0 if not injected)
         uint32_t repl_height = 0;
 
-        uint32_t data_size = 0;      // GPU byte size of the full mip chain
+        uint64_t data_size = 0;      // GPU byte size of the full mip chain
 
         uint32_t format_id = 0;      // native DXGI_FORMAT / D3DFORMAT value
         std::string format_str;      // full name, e.g. "DXGI_FORMAT_BC3_UNORM"
@@ -69,7 +69,7 @@ namespace TextureToolkit
 
         uint64_t replacement_handle = 0;
         uint64_t last_seen_frame = 0;   // scene-visibility test (per-frame)
-        uint64_t last_seen_ticks = 0;   // eviction age (wall clock, so it is framerate independent)
+        uint64_t last_seen_ticks = 0;   // eviction age, in HookTimings::now_ms (real time, any framerate)
     };
 
     class TextureManager
@@ -95,9 +95,9 @@ namespace TextureToolkit
         bool highlight_selected = true; // blink the panel's selected texture in the game
 
         // The texture the panel has selected on its Textures page, or 0. While it is set and
-        // highlight_selected is on, every bind of that texture is replaced with nothing for half of
-        // each blink, so whatever it is drawn on flickers in the game and can be found by eye.
-        // Atomic: written by the panel each frame, read by every bind.
+        // highlight_selected is on, every bind of that texture is replaced with a magenta stand-in
+        // for half of each blink, so whatever it is drawn on flashes in the game and can be found
+        // by eye. Atomic: written by the panel each frame, read by every bind.
         void set_highlight_target(uint64_t hash) { m_highlight_hash.store(hash, std::memory_order_relaxed); }
 
         // Whether `texture` is the one Blink in game is aimed at right now.
@@ -108,8 +108,8 @@ namespace TextureToolkit
         // holds a DEFAULT-pool resource.
         void release_d3d9_game_references();
 
-        // What a bind of `orig` would get right now (nothing during Blink's off half, else its
-        // replacement or itself), without counting it as drawn. For re-applying a bind.
+        // What a bind of `orig` would get right now (the magenta stand-in during Blink's off half,
+        // else its replacement or itself), without counting it as drawn. For re-applying a bind.
         IDirect3DBaseTexture9 *blink_binding9(IDirect3DBaseTexture9 *orig);
         bool is_magenta9(IDirect3DBaseTexture9 *texture) const { return texture != nullptr && texture == m_magenta_tex9; }
 
@@ -305,6 +305,7 @@ namespace TextureToolkit
         // the game's draw call); the actual DDS read and texture creation happen in on_frame via
         // process_pending_injections, a couple per frame. Both require m_mutex.
         void note_pending_injection(uint64_t hash, bool is_dx11);
+        bool has_inject_file(uint64_t hash, uint32_t sk_hash) const;
         void process_pending_injections();
 
         std::unordered_map<uint64_t, bool> m_pending_injections; // hash -> is_dx11
@@ -390,8 +391,9 @@ namespace TextureToolkit
         // long session. Caller MUST hold m_mutex.
         void evict_stale_textures(uint64_t now_ticks);
 
-        // Resolves the file for a hash: our own 16-hex name first, then Special K's 8-hex top-CRC
-        // name when AcceptSpecialKNames is on. via_sk_name reports which naming matched.
+        // Resolves the file for a hash: our own 16-hex name or, with AcceptSpecialKNames on, Special
+        // K's 8-hex top-CRC name, whichever comes from the higher source in the load order (ours
+        // when both are in the same folder). via_sk_name reports which naming matched.
         std::filesystem::path find_injection_path(uint64_t hash, uint32_t sk_hash = 0, bool *via_sk_name = nullptr);
     };
 }

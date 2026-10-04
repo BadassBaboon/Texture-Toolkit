@@ -5,14 +5,10 @@
 #include "Config.h"
 #include "Logger.h"
 #include "ScopedFlag.h"
-#include <atomic>
-#include <intrin.h>
 #include "imgui.h"
 #include "imgui_impl_win32.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
-
-extern HMODULE g_our_module;
 
 namespace TextureToolkit
 {
@@ -20,6 +16,7 @@ namespace TextureToolkit
     // the game's does not. Per thread, so raising it on the render thread (or the thread pumping
     // the window's messages) never opens the mask for a game thread polling keys meanwhile.
     thread_local bool g_inside_imgui_render = false;
+
     DInput8Hook &DInput8Hook::get()
     {
         static DInput8Hook instance;
@@ -50,7 +47,7 @@ namespace TextureToolkit
             if (pDirectInput8Create != nullptr)
             {
                 HookManager::get().create_hook(pDirectInput8Create, &Hooked_DirectInput8Create, reinterpret_cast<void **>(&m_orig_dinput8_create));
-                IATHook::hook_all_modules("dinput8.dll", "DirectInput8Create", &Hooked_DirectInput8Create, reinterpret_cast<void **>(&m_orig_dinput8_create));
+                IATHook::hook_game_exe("dinput8.dll", "DirectInput8Create", &Hooked_DirectInput8Create, reinterpret_cast<void **>(&m_orig_dinput8_create));
                 Logger::get().info("[DInput8Hook] DirectInput8Create API & IAT hooks installed successfully.");
             }
         }
@@ -229,8 +226,6 @@ namespace TextureToolkit
 
         return hr;
     }
-
-
 
     BOOL WINAPI DInput8Hook::Hooked_SetCursorPos(int X, int Y)
     {

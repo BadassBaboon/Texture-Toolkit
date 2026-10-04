@@ -91,13 +91,33 @@ namespace TextureToolkit::HookTimings
 
     uint64_t now()
     {
+        uint64_t t;
         if (const PreciseTime_t fn = precise_time())
         {
             FILETIME ft = {};
             fn(&ft);
-            return (static_cast<uint64_t>(ft.dwHighDateTime) << 32) | ft.dwLowDateTime;
+            t = (static_cast<uint64_t>(ft.dwHighDateTime) << 32) | ft.dwLowDateTime;
         }
-        return qpc_now();
+        else
+            t = qpc_now();
+
+        // The system clock can be stepped back (a time sync, the user changing it). Every caller
+        // subtracts two readings, and a negative interval would come out as an enormous unsigned
+        // one, so the clock holds still instead until real time catches up.
+        static std::atomic<uint64_t> s_last{0};
+        uint64_t last = s_last.load(std::memory_order_relaxed);
+        while (t > last && !s_last.compare_exchange_weak(last, t, std::memory_order_relaxed))
+        {
+        }
+        return (t > last) ? t : last;
+    }
+
+    uint64_t now_ms()
+    {
+        // Integer division only: a 32-bit Direct3D 9 game runs the FPU at single precision, at
+        // which the absolute clock as a double barely moves (see TextureManager::blink_phase_off).
+        static const uint64_t per_ms = (std::max)(uint64_t(1), static_cast<uint64_t>(ticks_per_ms() + 0.5));
+        return now() / per_ms;
     }
 
     void record(Site site, uint64_t start)
@@ -150,13 +170,6 @@ namespace TextureToolkit::HookTimings
         g_last_frame = t;
 
         if (g_window_start == 0)
-        {
-            g_window_start = t;
-            g_window_qpc = qpc_now();
-            return;
-        }
-        // The system clock can be stepped backwards by a time sync; start the window over.
-        if (t < g_window_start)
         {
             g_window_start = t;
             g_window_qpc = qpc_now();

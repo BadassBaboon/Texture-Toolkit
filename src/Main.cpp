@@ -1,6 +1,6 @@
 /*
- * Texture Toolkit Standalone v1.1.0 by BadassBaboon
- * Native Proxy Wrapper & ASI Plugin for Direct3D 9 & Direct3D 11
+ * Texture Toolkit by BadassBaboon
+ * ASI plugin for Direct3D 9 and Direct3D 11 (the version is in Version.h)
  */
 
 #include <windows.h>

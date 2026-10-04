@@ -4,6 +4,7 @@
 #include "TextureManager.h"
 #include "UITheme.h"
 #include "Logo.h"
+#include "HookTimings.h"
 #include <imgui.h>
 #include <algorithm>
 #include <cfloat>
@@ -24,7 +25,7 @@ namespace TextureToolkit
 
     void OSDBanner::reset()
     {
-        m_start_time = std::chrono::steady_clock::now();
+        m_start_ms = 0;
         m_started = false; // (re)armed; the clock starts on the first drawn frame
         m_active = true;
     }
@@ -46,11 +47,10 @@ namespace TextureToolkit
         if (!m_started)
         {
             m_started = true;
-            m_start_time = std::chrono::steady_clock::now();
+            m_start_ms = HookTimings::now_ms();
         }
 
-        auto now = std::chrono::steady_clock::now();
-        float elapsed = std::chrono::duration<float>(now - m_start_time).count();
+        const float elapsed = static_cast<float>(HookTimings::now_ms() - m_start_ms) / 1000.0f;
 
         float duration = config.osd_duration_seconds;
         if (elapsed >= duration)

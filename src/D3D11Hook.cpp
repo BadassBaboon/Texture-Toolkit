@@ -112,7 +112,7 @@ namespace TextureToolkit
             if (pD3D11CreateDeviceAndSwapChain != nullptr)
             {
                 HookManager::get().create_hook(pD3D11CreateDeviceAndSwapChain, &Hooked_D3D11CreateDeviceAndSwapChain, reinterpret_cast<void **>(&m_orig_create_device_and_swapchain));
-                IATHook::hook_all_modules("d3d11.dll", "D3D11CreateDeviceAndSwapChain", &Hooked_D3D11CreateDeviceAndSwapChain, reinterpret_cast<void **>(&m_orig_create_device_and_swapchain));
+                IATHook::hook_game_exe("d3d11.dll", "D3D11CreateDeviceAndSwapChain", &Hooked_D3D11CreateDeviceAndSwapChain, reinterpret_cast<void **>(&m_orig_create_device_and_swapchain));
                 Logger::get().info("[D3D11Hook] D3D11CreateDeviceAndSwapChain API & IAT hooks installed successfully.");
             }
 
@@ -120,7 +120,7 @@ namespace TextureToolkit
             if (pD3D11CreateDevice != nullptr)
             {
                 HookManager::get().create_hook(pD3D11CreateDevice, &Hooked_D3D11CreateDevice, reinterpret_cast<void **>(&m_orig_create_device));
-                IATHook::hook_all_modules("d3d11.dll", "D3D11CreateDevice", &Hooked_D3D11CreateDevice, reinterpret_cast<void **>(&m_orig_create_device));
+                IATHook::hook_game_exe("d3d11.dll", "D3D11CreateDevice", &Hooked_D3D11CreateDevice, reinterpret_cast<void **>(&m_orig_create_device));
                 Logger::get().info("[D3D11Hook] D3D11CreateDevice API & IAT hooks installed successfully.");
             }
         }
@@ -131,7 +131,7 @@ namespace TextureToolkit
             if (pCreateDXGIFactory != nullptr)
             {
                 HookManager::get().create_hook(pCreateDXGIFactory, &Hooked_CreateDXGIFactory, reinterpret_cast<void **>(&m_orig_create_dxgi_factory));
-                IATHook::hook_all_modules("dxgi.dll", "CreateDXGIFactory", &Hooked_CreateDXGIFactory, reinterpret_cast<void **>(&m_orig_create_dxgi_factory));
+                IATHook::hook_game_exe("dxgi.dll", "CreateDXGIFactory", &Hooked_CreateDXGIFactory, reinterpret_cast<void **>(&m_orig_create_dxgi_factory));
                 Logger::get().info("[D3D11Hook] CreateDXGIFactory API & IAT hooks installed successfully.");
             }
 
@@ -142,7 +142,7 @@ namespace TextureToolkit
             if (pCreateDXGIFactory2 != nullptr)
             {
                 HookManager::get().create_hook(pCreateDXGIFactory2, &Hooked_CreateDXGIFactory2, reinterpret_cast<void **>(&m_orig_create_dxgi_factory2));
-                IATHook::hook_all_modules("dxgi.dll", "CreateDXGIFactory2", &Hooked_CreateDXGIFactory2, reinterpret_cast<void **>(&m_orig_create_dxgi_factory2));
+                IATHook::hook_game_exe("dxgi.dll", "CreateDXGIFactory2", &Hooked_CreateDXGIFactory2, reinterpret_cast<void **>(&m_orig_create_dxgi_factory2));
                 Logger::get().info("[D3D11Hook] CreateDXGIFactory2 API & IAT hooks installed successfully.");
             }
 
@@ -150,7 +150,7 @@ namespace TextureToolkit
             if (pCreateDXGIFactory1 != nullptr)
             {
                 HookManager::get().create_hook(pCreateDXGIFactory1, &Hooked_CreateDXGIFactory1, reinterpret_cast<void **>(&m_orig_create_dxgi_factory1));
-                IATHook::hook_all_modules("dxgi.dll", "CreateDXGIFactory1", &Hooked_CreateDXGIFactory1, reinterpret_cast<void **>(&m_orig_create_dxgi_factory1));
+                IATHook::hook_game_exe("dxgi.dll", "CreateDXGIFactory1", &Hooked_CreateDXGIFactory1, reinterpret_cast<void **>(&m_orig_create_dxgi_factory1));
                 Logger::get().info("[D3D11Hook] CreateDXGIFactory1 API & IAT hooks installed successfully.");
             }
         }
@@ -420,11 +420,12 @@ namespace TextureToolkit
         ImGui::GetIO().IniFilename = ini_path_str.c_str();
 
         ImGui_ImplWin32_Init(m_hwnd);
-        // Every ImGui backend call runs with s_inside_injection set: the panel's own textures (the font
-        // atlas, the logo) and binds must not be tracked as the game's. They were, which put our font in the
-        // texture list and let Blink in game, aimed at it, blink the whole panel.
+        // Every ImGui backend call runs with s_inside_injection set: the panel's own textures (the
+        // font atlas) and binds must not be tracked as the game's. They were, which put our font in
+        // the texture list and let Blink in game, aimed at it, blink the whole panel. (The logo
+        // guards its own creation.)
         { ScopedFlag own_draw(s_inside_injection); ImGui_ImplDX11_Init(m_device, m_context); }
-        { ScopedFlag own_draw(s_inside_injection); Logo::create_d3d11(m_device); }
+        Logo::create_d3d11(m_device);
 
         m_imgui_initialized = true;
         Logger::get().info("[D3D11Hook] Dear ImGui initialized natively for real game DirectX 11 device.");
@@ -515,6 +516,7 @@ namespace TextureToolkit
 
         { ScopedFlag own_draw(s_inside_injection); ImGui_ImplDX11_NewFrame(); }
         ImGui_ImplWin32_NewFrame();
+        TextureToolkitUI::set_real_delta_time();
         ImGui::NewFrame();
 
         TextureToolkitUI::draw_ui();

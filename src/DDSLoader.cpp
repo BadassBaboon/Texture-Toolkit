@@ -5,6 +5,7 @@
 #include <cstring>
 #include <algorithm>
 #include <exception>
+#include <filesystem>
 
 namespace TextureToolkit
 {
@@ -139,6 +140,15 @@ namespace TextureToolkit
             return false;
         }
 
+        // A volume texture stores every depth slice of a level before the next level, so reading it
+        // as a 2D chain would take mips from the wrong place. Injection only creates 2D textures.
+        constexpr uint32_t kCaps2Volume = 0x200000; // DDSCAPS2_VOLUME
+        if ((header.dwCaps2 & kCaps2Volume) != 0 && header.dwDepth > 1)
+        {
+            out_image.load_error = "volume (3D) texture; only 2D textures can be loaded";
+            return false;
+        }
+
         out_image.width = header.dwWidth;
         out_image.height = header.dwHeight;
         out_image.depth = (header.dwDepth > 0) ? header.dwDepth : 1;
@@ -162,6 +172,12 @@ namespace TextureToolkit
                 if (file.gcount() != static_cast<std::streamsize>(sizeof(dxt10)))
                 {
                     out_image.load_error = "truncated: file ends inside the DX10 header";
+                    return false;
+                }
+                constexpr uint32_t kDimensionTexture3D = 4; // D3D10_RESOURCE_DIMENSION_TEXTURE3D
+                if (dxt10.resourceDimension == kDimensionTexture3D)
+                {
+                    out_image.load_error = "volume (3D) texture; only 2D textures can be loaded";
                     return false;
                 }
                 if (dxt10.arraySize > 0)
@@ -293,12 +309,16 @@ namespace TextureToolkit
                     // format we mapped wrongly, or truncated data) and the load fails outright, so
                     // record what we expected: the numbers identify which of the two it was.
                     if (mip == 0)
+                    {
+                        char fourcc[16];
+                        std::snprintf(fourcc, sizeof(fourcc), "0x%08X", static_cast<unsigned>(header.ddspf.dwFourCC));
                         out_image.load_error = "mip 0 short read: expected " + std::to_string(slice_pitch) +
                                                " bytes, got " + std::to_string(static_cast<long long>(file.gcount())) +
                                                " (" + std::to_string(out_image.width) + "x" + std::to_string(out_image.height) +
                                                ", format " + std::to_string(static_cast<uint32_t>(fmt)) +
-                                               ", fourcc 0x" + std::to_string(header.ddspf.dwFourCC) +
+                                               ", fourcc " + fourcc +
                                                ", bitcount " + std::to_string(header.ddspf.dwRGBBitCount) + ")";
+                    }
                     break;
                 }
             }
@@ -334,7 +354,12 @@ namespace TextureToolkit
         if (subresources.empty() || subresources[0].data == nullptr)
             return false;
 
-        std::ofstream file(path_from_utf8(filepath), std::ios::binary);
+        for (const auto &subres : subresources)
+            if (subres.data == nullptr)
+                return false;
+
+        const std::filesystem::path path = path_from_utf8(filepath);
+        std::ofstream file(path, std::ios::binary);
         if (!file.is_open())
             return false;
 
@@ -407,6 +432,15 @@ namespace TextureToolkit
             h = (std::max)(1u, h / 2);
         }
 
+        // A full disk or a vanished folder fails the writes above silently. Say so, and do not
+        // leave a truncated .dds behind to be mistaken for a good one.
+        file.close();
+        if (file.fail())
+        {
+            std::error_code ec;
+            std::filesystem::remove(path, ec);
+            return false;
+        }
         return true;
     }
 }

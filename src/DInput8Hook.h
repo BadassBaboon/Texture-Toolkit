@@ -38,8 +38,6 @@ namespace TextureToolkit
         typedef HRESULT(STDMETHODCALLTYPE *GetDeviceData_t)(IDirectInputDevice8 *pThis, DWORD cbObjectData, LPDIDEVICEOBJECTDATA rgdod, LPDWORD pdwInOut, DWORD dwFlags);
         GetDeviceData_t m_orig_get_device_data = nullptr;
 
-
-
         typedef BOOL(WINAPI *SetCursorPos_t)(int X, int Y);
         SetCursorPos_t m_orig_set_cursor_pos = nullptr;
 

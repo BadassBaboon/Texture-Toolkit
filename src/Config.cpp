@@ -14,18 +14,6 @@ ImGuiKey ImGui_ImplWin32_KeyEventToImGuiKey(WPARAM wParam, LPARAM lParam);
 
 namespace
 {
-    // The ini is written as an ANSI file, which is how GetPrivateProfileStringW reads one back.
-    std::string to_ini_text(const std::wstring &w)
-    {
-        if (w.empty())
-            return {};
-        const int n = WideCharToMultiByte(CP_ACP, 0, w.c_str(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
-        std::string out(static_cast<size_t>((std::max)(n, 0)), '\0');
-        if (n > 0)
-            WideCharToMultiByte(CP_ACP, 0, w.c_str(), static_cast<int>(w.size()), out.data(), n, nullptr, nullptr);
-        return out;
-    }
-
     std::wstring trim(const std::wstring &s)
     {
         const size_t b = s.find_first_not_of(L" \t\r\n");
@@ -53,18 +41,6 @@ namespace
             if (!piece.empty() && !dup)
                 out.push_back(piece);
             start = end + 1;
-        }
-        return out;
-    }
-
-    std::string join_list(const std::vector<std::wstring> &items)
-    {
-        std::string out;
-        for (size_t i = 0; i < items.size(); ++i)
-        {
-            if (i != 0)
-                out += ';';
-            out += to_ini_text(items[i]);
         }
         return out;
     }
@@ -105,7 +81,10 @@ namespace TextureToolkit
 
     void ConfigManager::load()
     {
-        if (!std::filesystem::exists(m_ini_path))
+        // The error_code form: this runs inside DllMain, where a thrown filesystem_error (access
+        // denied on the folder, say) would take the game down with it.
+        std::error_code exists_ec;
+        if (!std::filesystem::exists(m_ini_path, exists_ec))
         {
             save(); // Auto-generate default INI file
             return;
@@ -131,15 +110,20 @@ namespace TextureToolkit
         // would leave the panel unopenable with no clue why. Fall back and say so.
         if (m_config.hotkey == 0 || m_config.hotkey > 0xFE)
         {
-            Logger::get().warn("[ConfigManager] HotKey=" + std::to_string(m_config.hotkey) +
+            char given[16];
+            std::snprintf(given, sizeof(given), "0x%X", static_cast<unsigned>(m_config.hotkey));
+            Logger::get().warn(std::string("[ConfigManager] HotKey=") + given +
                                " is not a usable virtual-key code; falling back to INSERT (0x2D).");
             m_config.hotkey = VK_INSERT;
         }
 
-        // Resource root: holds dump/, inject/, and imgui.ini.
-        wchar_t root_str[MAX_PATH] = L"";
-        GetPrivateProfileStringW(L"TextureToolkit", L"ResourceRoot", L"TT", root_str, MAX_PATH, ini_w);
-        m_config.resource_root = root_str;
+        // Resource root: holds dump/, inject/, and imgui.ini. Read into a buffer as long as a path
+        // can be; MAX_PATH cut a long absolute root short without a word.
+        {
+            std::vector<wchar_t> root_str(32768, L'\0');
+            GetPrivateProfileStringW(L"TextureToolkit", L"ResourceRoot", L"TT", root_str.data(), static_cast<DWORD>(root_str.size()), ini_w);
+            m_config.resource_root = root_str.data();
+        }
         if (m_config.resource_root.empty())
             m_config.resource_root = "TT"; // an empty root would scatter dump/inject into the game folder
 
@@ -218,6 +202,7 @@ namespace TextureToolkit
                            " ShowCurrentFrameOnly=" + (m_config.show_current_frame_only ? "1" : "0") +
                            " AcceptSpecialKNames=" + (m_config.accept_sk_names ? "1" : "0") +
                            " HighlightSelected=" + (m_config.highlight_selected ? "1" : "0") +
+                           " ShowOSDBanner=" + (m_config.show_osd_banner ? "1" : "0") +
                            " Verbose=" + (m_config.verbose ? "1" : "0"));
     }
 
@@ -251,43 +236,51 @@ namespace TextureToolkit
             put(L"ModEnabled", kv.first, flag(kv.second));
     }
 
-    // A first run gets every key, with a comment explaining each.
+    // A first run gets every key, with a comment explaining each. Written as UTF-16 (with its
+    // byte-order mark), which GetPrivateProfileStringW reads and WritePrivateProfileStringW then
+    // keeps: as an ANSI file, a mod folder or ResourceRoot named outside the system code page (a
+    // Cyrillic name on an English Windows) was saved as question marks and never matched again.
     void ConfigManager::write_template()
     {
-        std::ofstream file(m_ini_path, std::ios::out | std::ios::trunc);
+        std::wostringstream ss;
+        ss << L"[TextureToolkit]\r\n"
+           << L"; Virtual Key Code for UI Toggle (0x2D = INSERT, 0x24 = HOME, 0x74 = F5)\r\n"
+           << L"HotKey=0x" << std::hex << std::uppercase << m_config.hotkey << std::dec << L"\r\n\r\n"
+           << L"; Root folder for dump/, inject/, and imgui.ini.\r\n"
+           << L"; Relative to the game's executable folder, or an absolute path.\r\n"
+           << L"ResourceRoot=" << m_config.resource_root.wstring() << L"\r\n\r\n"
+           << L"; Feature Toggles\r\n"
+           << L"EnableInjection=" << (m_config.enable_injection ? 1 : 0) << L"\r\n"
+           << L"AutoDump=" << (m_config.auto_dump ? 1 : 0) << L"\r\n"
+           << L"FilterSmallTextures=" << (m_config.filter_small_textures ? 1 : 0) << L"\r\n"
+           << L"ShowCurrentFrameOnly=" << (m_config.show_current_frame_only ? 1 : 0) << L"\r\n\r\n"
+           << L"; Also load texture packs named the way Special K names them (CRC-32C of the top mip)\r\n"
+           << L"AcceptSpecialKNames=" << (m_config.accept_sk_names ? 1 : 0) << L"\r\n\r\n"
+           << L"; Blink the texture selected in the panel magenta, in the game, so it can be found by eye\r\n"
+           << L"HighlightSelected=" << (m_config.highlight_selected ? 1 : 0) << L"\r\n\r\n"
+           << L"; On-Screen Display (OSD)\r\n"
+           << L"ShowOSDBanner=" << (m_config.show_osd_banner ? 1 : 0) << L"\r\n\r\n"
+           << L"; Diagnostics: 1 = verbose per-texture debug logging (slow)\r\n"
+           << L"Verbose=" << (m_config.verbose ? 1 : 0) << L"\r\n\r\n"
+           << L"[Mods]\r\n"
+           << L"; Every folder in ResourceRoot other than dump and inject is a texture mod.\r\n"
+           << L"; Load order, highest priority first, separated by ';'. \"inject\" is the inject folder.\r\n"
+           << L"; Mods not listed load after the ones that are. Set from the panel's Mod files page.\r\n"
+           << L"LoadOrder=";
+        for (size_t i = 0; i < m_config.mod_load_order.size(); ++i)
+            ss << (i ? L";" : L"") << m_config.mod_load_order[i];
+        ss << L"\r\n\r\n"
+           << L"[ModEnabled]\r\n"
+           << L"; <mod folder>=1 or 0 switches a mod on or off, overriding its own mod.ini default.\r\n";
+        for (const auto &kv : m_config.mod_enabled)
+            ss << kv.first << L"=" << (kv.second ? 1 : 0) << L"\r\n";
+
+        std::ofstream file(m_ini_path, std::ios::out | std::ios::trunc | std::ios::binary);
         if (!file.is_open())
             return;
-
-        std::ostringstream ss;
-        ss << "0x" << std::hex << std::uppercase << m_config.hotkey;
-
-        file << "[TextureToolkit]\n"
-             << "; Virtual Key Code for UI Toggle (0x2D = INSERT, 0x24 = HOME, 0x74 = F5)\n"
-             << "HotKey=" << ss.str() << "\n\n"
-             << "; Root folder for dump/, inject/, and imgui.ini.\n"
-             << "; Relative to the game's executable folder, or an absolute path.\n"
-             << "ResourceRoot=" << to_ini_text(m_config.resource_root.wstring()) << "\n\n"
-             << "; Feature Toggles\n"
-             << "EnableInjection=" << (m_config.enable_injection ? 1 : 0) << "\n"
-             << "AutoDump=" << (m_config.auto_dump ? 1 : 0) << "\n"
-             << "FilterSmallTextures=" << (m_config.filter_small_textures ? 1 : 0) << "\n"
-             << "ShowCurrentFrameOnly=" << (m_config.show_current_frame_only ? 1 : 0) << "\n\n"
-             << "; Also load texture packs named the way Special K names them (CRC-32C of the top mip)\n"
-             << "AcceptSpecialKNames=" << (m_config.accept_sk_names ? 1 : 0) << "\n\n"
-             << "; Blink the texture selected in the panel, in the game, so it can be found by eye\n"
-             << "HighlightSelected=" << (m_config.highlight_selected ? 1 : 0) << "\n\n"
-             << "; On-Screen Display (OSD)\n"
-             << "ShowOSDBanner=" << (m_config.show_osd_banner ? 1 : 0) << "\n\n"
-             << "; Diagnostics: 1 = verbose per-texture debug logging (slow)\n"
-             << "Verbose=" << (m_config.verbose ? 1 : 0) << "\n\n"
-             << "[Mods]\n"
-             << "; Every folder in ResourceRoot other than dump and inject is a texture mod.\n"
-             << "; Load order, highest priority first, separated by ';'. \"inject\" is the inject folder.\n"
-             << "; Mods not listed load after the ones that are. Set from the panel's Mod files page.\n"
-             << "LoadOrder=" << join_list(m_config.mod_load_order) << "\n\n"
-             << "[ModEnabled]\n"
-             << "; <mod folder>=1 or 0 switches a mod on or off, overriding its own mod.ini default.\n";
-        for (const auto &kv : m_config.mod_enabled)
-            file << to_ini_text(kv.first) << "=" << (kv.second ? 1 : 0) << "\n";
+        const std::wstring text = ss.str();
+        const wchar_t bom = 0xFEFF;
+        file.write(reinterpret_cast<const char *>(&bom), sizeof(bom));
+        file.write(reinterpret_cast<const char *>(text.data()), static_cast<std::streamsize>(text.size() * sizeof(wchar_t)));
     }
 }

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <chrono>
+#include <cstdint>
 
 namespace TextureToolkit
 {
@@ -20,7 +20,7 @@ namespace TextureToolkit
 
     private:
         OSDBanner();
-        std::chrono::steady_clock::time_point m_start_time;
+        uint64_t m_start_ms = 0; // HookTimings::now_ms, not steady_clock: a game can speed that up
         bool m_started = false; // the timer starts on the first drawn frame, not at init
         bool m_active = true;
     };

@@ -48,7 +48,7 @@ namespace TextureToolkit
     // When Texture Toolkit loaded, for the session length in Build Info. Real time, not
     // GetTickCount64, which a game's frame-rate unlocker can hook and speed up (NFS: The Run
     // reported a 55-minute session after three).
-    static const uint64_t s_session_start = HookTimings::now();
+    static const uint64_t s_session_start = HookTimings::now_ms();
 
     static const wchar_t *const kDiscordInvite = L"https://discord.gg/qRdVSkUW6n";
     static const char *const kDiscordLabel = "Join Discord";
@@ -136,7 +136,7 @@ namespace TextureToolkit
     // messages were handled. Polling sees every key in every game, and the messages, which are
     // still kept from the game, are no longer fed to ImGui, so nothing is ever typed twice.
     static bool s_key_held[256] = {};
-    static ULONGLONG s_key_repeat_at[256] = {};
+    static uint64_t s_key_repeat_at[256] = {};
 
     void TextureToolkitUI::feed_overlay_keyboard(HWND hwnd)
     {
@@ -158,8 +158,10 @@ namespace TextureToolkit
         io.AddKeyEvent(ImGuiMod_Super, ((state[VK_LWIN] | state[VK_RWIN]) & 0x80) != 0);
 
         const HKL layout = GetKeyboardLayout(hwnd != nullptr ? GetWindowThreadProcessId(hwnd, nullptr) : 0);
-        const ULONGLONG now = GetTickCount64();
-        constexpr ULONGLONG kRepeatDelayMs = 400, kRepeatRateMs = 35;
+        // Real time: a game whose frame-rate unlocker speeds up its timers would otherwise repeat
+        // every key the moment it went down.
+        const uint64_t now = HookTimings::now_ms();
+        constexpr uint64_t kRepeatDelayMs = 400, kRepeatRateMs = 35;
 
         // Scan codes and ImGui key names depend only on the layout, so they are looked up once per
         // layout rather than a few hundred calls into user32 every frame.
@@ -211,6 +213,20 @@ namespace TextureToolkit
                 if (chars[i] >= 0x20 && chars[i] != 0x7F)
                     io.AddInputCharacterUTF16(static_cast<ImWchar16>(chars[i]));
         }
+    }
+
+    void TextureToolkitUI::set_real_delta_time()
+    {
+        // The Win32 backend times frames with QueryPerformanceCounter, which a game's frame-rate
+        // unlocker can speed up (about 250x in one NFS: The Run setup): tooltips appeared at once,
+        // the switches snapped, and a double-click had a millisecond to land. Measured here on the
+        // real clock instead, and capped so the first frame after the panel was closed for a while
+        // does not jump every animation to its end.
+        static uint64_t s_last = 0;
+        const uint64_t now = HookTimings::now_ms();
+        const float dt = (s_last == 0) ? (1.0f / 60.0f) : static_cast<float>(now - s_last) / 1000.0f;
+        s_last = now;
+        ImGui::GetIO().DeltaTime = (std::min)((std::max)(dt, 0.0001f), 0.25f);
     }
 
     // -------------------------------------------------------------------------------------------
@@ -1456,8 +1472,7 @@ namespace TextureToolkit
         rows.push_back({ "Panel key", hotkey_name(cfg.hotkey) });
         rows.push_back({ "Resource root", path_utf8(tm.get_resource_root()) });
 
-        const unsigned long long mins = static_cast<unsigned long long>(
-            (HookTimings::now() - s_session_start) / HookTimings::ticks_per_ms() / 60000.0);
+        const unsigned long long mins = (HookTimings::now_ms() - s_session_start) / 60000ULL;
         char up[48];
         std::snprintf(up, sizeof(up), "%llu min", mins);
         rows.push_back({ "Session", up });
@@ -1470,8 +1485,8 @@ namespace TextureToolkit
 
         // Module and adapter queries are not free; refresh a couple of times a second at most.
         static std::vector<InfoRow> s_rows;
-        static ULONGLONG s_next = 0;
-        const ULONGLONG now = GetTickCount64();
+        static uint64_t s_next = 0;
+        const uint64_t now = HookTimings::now_ms();
         if (s_rows.empty() || now >= s_next)
         {
             s_rows = collect_build_info(tm);
@@ -1552,8 +1567,9 @@ namespace TextureToolkit
     }
 
     // As wide as the sidebar's own contents need, at the sizes they are drawn at (in practice the
-    // logo with the name beside it): nothing in it is shrunk or clipped to fit. Sized for the widest the badges get in practice (a five-digit
-    // texture count, a three-digit failure count) so the panel does not shift as they change.
+    // logo with the name beside it): nothing in it is shrunk or clipped to fit. Sized for the
+    // widest the badges get in practice (a five-digit texture count, a three-digit failure count)
+    // so the panel does not shift as they change.
     static constexpr float kSidebarPad = 16.0f;
     static float sidebar_width()
     {
@@ -1671,15 +1687,12 @@ namespace TextureToolkit
         OSDBanner::get().draw_osd();
 
         // Only the Textures page aims the in-game blink (it sets it again below); every other
-        // page, and a closed panel, leaves the game drawing normally.
+        // page leaves the game drawing normally. A closed panel is handled by the hooks, which
+        // clear the blink and the pinned preview before draw_ui is reached, or skip it entirely.
         TextureManager::get().set_highlight_target(0);
 
         if (!is_visible())
-        {
-            // Drop the pinned preview reference while the panel is hidden.
-            TextureManager::get().set_preview_target(0);
             return;
-        }
 
         TextureManager &tm = TextureManager::get();
 

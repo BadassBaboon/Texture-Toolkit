@@ -161,16 +161,30 @@ namespace TextureToolkit
         const ULONGLONG now = GetTickCount64();
         constexpr ULONGLONG kRepeatDelayMs = 400, kRepeatRateMs = 35;
 
+        // Scan codes and ImGui key names depend only on the layout, so they are looked up once per
+        // layout rather than a few hundred calls into user32 every frame.
+        static HKL s_layout = nullptr;
+        static UINT s_scan[256] = {};
+        static ImGuiKey s_imgui_key[256] = {};
+        if (layout != s_layout)
+        {
+            s_layout = layout;
+            for (int vk = 1; vk < 255; ++vk)
+            {
+                s_scan[vk] = MapVirtualKeyExW(static_cast<UINT>(vk), MAPVK_VK_TO_VSC, layout);
+                s_imgui_key[vk] = ImGui_ImplWin32_KeyEventToImGuiKey(static_cast<WPARAM>(vk), static_cast<LPARAM>(s_scan[vk]) << 16);
+            }
+        }
+
         for (int vk = 1; vk < 255; ++vk)
         {
             const bool down = (state[vk] & 0x80) != 0;
-            const UINT scan = MapVirtualKeyExW(static_cast<UINT>(vk), MAPVK_VK_TO_VSC, layout);
+            const UINT scan = s_scan[vk];
 
-            // Named keys (arrows, Backspace, Enter, Ctrl+A and the like); ImGui repeats these
-            // itself and ignores an event that does not change a key's state.
-            const ImGuiKey key = ImGui_ImplWin32_KeyEventToImGuiKey(static_cast<WPARAM>(vk), static_cast<LPARAM>(scan) << 16);
-            if (key != ImGuiKey_None)
-                io.AddKeyEvent(key, down);
+            // Named keys (arrows, Backspace, Enter, Ctrl+A and the like), told to ImGui only when
+            // they change; ImGui repeats held ones itself.
+            if (down != s_key_held[vk] && s_imgui_key[vk] != ImGuiKey_None)
+                io.AddKeyEvent(s_imgui_key[vk], down);
 
             // Characters, with our own repeat, since nothing here is a message Windows repeats.
             bool emit = false;
@@ -1061,9 +1075,7 @@ namespace TextureToolkit
                 if (!m.is_base)
                 {
                     // The folder, not the display name, is what the ini and the disk know it by.
-                    char folder[260];
-                    WideCharToMultiByte(CP_UTF8, 0, m.id.c_str(), -1, folder, sizeof(folder), nullptr, nullptr);
-                    detail += std::string("  \xC2\xB7  TT/") + folder;
+                    detail += "  \xC2\xB7  TT/" + path_utf8(m.id);
                 }
                 if (!m.is_base && m.overridden && m.enabled != m.enabled_default)
                     detail += m.enabled_default ? "  \xC2\xB7  on by default" : "  \xC2\xB7  off by default";
@@ -1134,8 +1146,7 @@ namespace TextureToolkit
 
         if (action != Action::None)
         {
-            char name[260];
-            WideCharToMultiByte(CP_UTF8, 0, action_id.c_str(), -1, name, sizeof(name), nullptr, nullptr);
+            const std::string name = path_utf8(action_id);
             if (action == Action::Toggle)
             {
                 tm.set_mod_enabled(action_id, action_value);

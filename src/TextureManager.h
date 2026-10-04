@@ -223,6 +223,11 @@ namespace TextureToolkit
         std::unordered_set<uint64_t> m_active_frame_hashes;
         std::unordered_map<uint64_t, std::filesystem::path> m_injected_files;
         std::unordered_map<uint32_t, std::filesystem::path> m_sk_injected_files; // Special K naming
+        // Load-order position of the source each file above came from (0 = highest priority).
+        // The two namings are separate tables, so this is what lets a Special K-named file in a
+        // higher mod win over our naming in a lower one; see find_injection_path.
+        std::unordered_map<uint64_t, uint32_t> m_injected_rank;
+        std::unordered_map<uint32_t, uint32_t> m_sk_injected_rank;
 
         // True while any SK-named file is loaded. Read on the upload path without the lock: with
         // no such file present the Special K hash cannot match anything, and computing it means a

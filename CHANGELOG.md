@@ -160,6 +160,13 @@ them, so every existing mod keeps working.
 - **Mod files and Build Info said "0 found" for a folder of Special K-named files**: the count
   only included our own naming. Build Info's session length is also measured in real time now, not
   by the game's clock, which a frame-rate unlocker can speed up.
+- **A Special K-named file in a higher mod lost to our own naming in a lower one.** The two namings
+  are looked up in separate tables, and ours was always tried first, so load order only held
+  between files named the same way. Each file now carries its source's place in the load order,
+  and where both namings match a texture the higher source wins (within one folder, ours still
+  does). Replacements rebuilt after Reload make the same choice.
+- The panel's keyboard polling looks up scan codes once per keyboard layout and tells ImGui only
+  about keys that changed, instead of several hundred calls a frame while the panel is open.
 - Unloading the `.asi` tore the texture manager down while its hooks could still call into it; the
   hooks are removed first now.
 - **Every switch flipped in the panel rewrote `TextureToolkit.ini` from scratch**, discarding any

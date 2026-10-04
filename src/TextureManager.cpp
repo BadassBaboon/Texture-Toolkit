@@ -1041,8 +1041,11 @@ namespace TextureToolkit
         // enabled source that ships a file for a hash is the one used.
         std::unordered_map<uint64_t, std::filesystem::path> found;
         std::unordered_map<uint32_t, std::filesystem::path> found_sk;
-        for (ModInfo &m : mods)
+        std::unordered_map<uint64_t, uint32_t> found_rank;
+        std::unordered_map<uint32_t, uint32_t> found_sk_rank;
+        for (size_t rank = 0; rank < mods.size(); ++rank)
         {
+            ModInfo &m = mods[rank];
             if (!m.enabled)
                 continue;
             std::unordered_map<uint64_t, std::filesystem::path> dir_found;
@@ -1063,9 +1066,21 @@ namespace TextureToolkit
             }
             m.file_count = dir_found.size() + dir_found_sk.size();
             for (auto &kv : dir_found)
-                m.provided += found.emplace(kv.first, std::move(kv.second)).second ? 1 : 0;
+            {
+                if (found.emplace(kv.first, std::move(kv.second)).second)
+                {
+                    found_rank.emplace(kv.first, static_cast<uint32_t>(rank));
+                    ++m.provided;
+                }
+            }
             for (auto &kv : dir_found_sk)
-                m.provided += found_sk.emplace(kv.first, std::move(kv.second)).second ? 1 : 0;
+            {
+                if (found_sk.emplace(kv.first, std::move(kv.second)).second)
+                {
+                    found_sk_rank.emplace(kv.first, static_cast<uint32_t>(rank));
+                    ++m.provided;
+                }
+            }
         }
 
         {
@@ -1079,6 +1094,8 @@ namespace TextureToolkit
 
             m_injected_files.swap(found);
             m_sk_injected_files.swap(found_sk);
+            m_injected_rank.swap(found_rank);
+            m_sk_injected_rank.swap(found_sk_rank);
             m_have_sk_files.store(!m_sk_injected_files.empty(), std::memory_order_relaxed);
             m_failed_injections.clear(); // retry files that were bad last time; they may be fixed now
             m_pending_injections.clear();
@@ -1169,22 +1186,26 @@ namespace TextureToolkit
             *via_sk_name = false;
 
         auto it = m_injected_files.find(hash);
-        if (it != m_injected_files.end())
-            return it->second;
 
-        // Fall back to Special K's naming, so an SK texture pack works without being renamed.
+        // Special K's naming too, so an SK texture pack works without being renamed. Where both
+        // name the texture, the higher source in the load order wins; within one folder, ours does.
         if (accept_sk_names && sk_hash != 0)
         {
             auto sit = m_sk_injected_files.find(sk_hash);
             if (sit != m_sk_injected_files.end())
             {
-                if (via_sk_name != nullptr)
-                    *via_sk_name = true;
-                return sit->second;
+                const bool sk_wins = (it == m_injected_files.end()) ||
+                                     (m_sk_injected_rank[sk_hash] < m_injected_rank[hash]);
+                if (sk_wins)
+                {
+                    if (via_sk_name != nullptr)
+                        *via_sk_name = true;
+                    return sit->second;
+                }
             }
         }
 
-        return std::filesystem::path();
+        return (it != m_injected_files.end()) ? it->second : std::filesystem::path();
     }
 
     uint64_t TextureManager::get_tagged_hash9(IDirect3DBaseTexture9 *texture) const
@@ -1313,9 +1334,13 @@ namespace TextureToolkit
                 continue;
 
             TextureDetails &details = tit->second;
+            // The same choice as at upload: a higher mod's Special K-named file can outrank it.
+            bool via_sk_name = false;
+            const std::filesystem::path path = find_injection_path(hash, details.sk_hash, &via_sk_name);
+            details.injected_via_sk_name = via_sk_name;
             const bool ok = is_dx11
-                ? build_replacement11(dev11, hash, fit->second, details.mip_levels, details)
-                : build_replacement9(dev9, hash, fit->second, details.mip_levels, details);
+                ? build_replacement11(dev11, hash, path, details.mip_levels, details)
+                : build_replacement9(dev9, hash, path, details.mip_levels, details);
 
             if (!ok)
                 m_failed_injections.insert(hash); // do not retry a broken file every frame

@@ -828,17 +828,6 @@ namespace TextureToolkit
         }
     }
 
-    static std::string wide_to_utf8(const std::wstring &w)
-    {
-        if (w.empty())
-            return {};
-        const int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
-        std::string out(static_cast<size_t>((std::max)(n, 0)), '\0');
-        if (n > 0)
-            WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), out.data(), n, nullptr, nullptr);
-        return out;
-    }
-
     // Collects the replacement files in one folder into `found` (our naming) and `found_sk`
     // (Special K's). A mod folder is walked recursively so it can be organised into subfolders;
     // the inject folder is not, as before. Files are taken in sorted path order so a hash two
@@ -883,7 +872,7 @@ namespace TextureToolkit
 
         for (const std::filesystem::path &file : files)
         {
-            std::string stem = wide_to_utf8(file.stem().wstring());
+            std::string stem = path_utf8(file.stem().wstring());
             const bool prefixed = (stem.rfind("0x", 0) == 0 || stem.rfind("0X", 0) == 0);
             if (prefixed)
                 stem = stem.substr(2);
@@ -978,7 +967,7 @@ namespace TextureToolkit
             ModInfo m;
             m.id = folder;
             m.dir = it->path();
-            m.name = wide_to_utf8(folder);
+            m.name = path_utf8(folder);
 
             // Optional description: <mod>\mod.ini, section [Mod].
             if (has_manifest)
@@ -991,12 +980,12 @@ namespace TextureToolkit
                     GetPrivateProfileStringW(L"Mod", key, L"", buf, ARRAYSIZE(buf), ini.c_str());
                     return std::wstring(buf);
                 };
-                const std::string name = wide_to_utf8(read(L"Name"));
+                const std::string name = path_utf8(read(L"Name"));
                 if (!name.empty())
                     m.name = name;
-                m.author = wide_to_utf8(read(L"Author"));
-                m.version = wide_to_utf8(read(L"Version"));
-                m.description = wide_to_utf8(read(L"Description"));
+                m.author = path_utf8(read(L"Author"));
+                m.version = path_utf8(read(L"Version"));
+                m.description = path_utf8(read(L"Description"));
                 m.enabled_default = parse_ini_bool(read(L"Enabled"), true);
             }
 
@@ -1065,11 +1054,11 @@ namespace TextureToolkit
                 // Said once per scan rather than per file, with a few names to go on.
                 std::string names;
                 for (size_t k = 0; k < ignored.size() && k < 5; ++k)
-                    names += (k ? ", " : "") + wide_to_utf8(ignored[k].filename().wstring());
+                    names += (k ? ", " : "") + path_utf8(ignored[k].filename().wstring());
                 if (ignored.size() > 5)
                     names += ", ...";
                 Logger::get().warn("[TextureManager] Skipped " + std::to_string(ignored.size()) + " .dds file(s) in " +
-                                   (m.is_base ? std::string("TT/inject") : wide_to_utf8(m.id)) +
+                                   (m.is_base ? std::string("TT/inject") : path_utf8(m.id)) +
                                    " whose names are not a texture hash (16 hex digits, or a Special K name): " + names);
             }
             m.file_count = dir_found.size() + dir_found_sk.size();
@@ -1120,7 +1109,7 @@ namespace TextureToolkit
         {
             const ModInfo &m = mods[i];
             std::string line = "[TextureManager] Load order " + std::to_string(i + 1) + ": " +
-                               (m.is_base ? std::string("inject") : wide_to_utf8(m.id));
+                               (m.is_base ? std::string("inject") : path_utf8(m.id));
             if (!m.is_base && m.has_manifest)
                 line += " (\"" + m.name + "\"" + (m.version.empty() ? "" : " " + m.version) + ")";
             if (!m.enabled)

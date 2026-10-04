@@ -8,13 +8,11 @@
 #include "UITheme.h"
 #include "Logo.h"
 #include "Environment.h"
+#include "PathUtil.h"
 #include "Version.h"
 #include <windows.h>
 #include <cmath>
-#include <iterator>
-#include <cwctype>
 #include <dxgi.h>
-#include <psapi.h>
 #include <shellapi.h>
 #include <vector>
 #include <string>
@@ -57,19 +55,6 @@ namespace TextureToolkit
     {
         s_status_message = msg;
         Logger::get().info("[UI] " + msg);
-    }
-
-    // UTF-8 for ImGui. path::string() converts through the ANSI code page and throws on a
-    // character it cannot represent, which a user's folder name can easily contain.
-    static std::string narrow(const std::wstring &w)
-    {
-        if (w.empty())
-            return {};
-        const int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
-        std::string out(static_cast<size_t>((std::max)(n, 0)), '\0');
-        if (n > 0)
-            WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), out.data(), n, nullptr, nullptr);
-        return out;
     }
 
     static void OpenDirectory(const std::filesystem::path &dir_path)
@@ -1143,7 +1128,7 @@ namespace TextureToolkit
 
             ImGui::PushFont(nullptr, kSizeSmall);
             ImGui::PushStyleColor(ImGuiCol_Text, pal().text_faint);
-            ImGui::TextWrapped("%s", narrow(tm.get_inject_dir().wstring()).c_str());
+            ImGui::TextWrapped("%s", path_utf8(tm.get_inject_dir()).c_str());
             ImGui::PopStyleColor();
             ImGui::PopFont();
         }
@@ -1176,23 +1161,15 @@ namespace TextureToolkit
         EndCard();
 
         BeginCard("folders", "Folders", "Set ResourceRoot in TextureToolkit.ini to move all of these at once.");
-        KeyValue("Resource root", narrow(tm.get_resource_root().wstring()).c_str());
-        KeyValue("Inject", narrow(tm.get_inject_dir().wstring()).c_str());
-        KeyValue("Dump", narrow(tm.get_dump_dir().wstring()).c_str());
+        KeyValue("Resource root", path_utf8(tm.get_resource_root()).c_str());
+        KeyValue("Inject", path_utf8(tm.get_inject_dir()).c_str());
+        KeyValue("Dump", path_utf8(tm.get_dump_dir()).c_str());
         EndCard();
     }
 
     // ---- Build info ---------------------------------------------------------------------------
     // Everything worth knowing about a user's setup when a texture will not show, on one card that
     // can be screenshotted, or copied as text with one click and pasted into a bug report.
-
-    static std::wstring module_path(HMODULE module)
-    {
-        std::wstring buf(1024, L'\0');
-        const DWORD n = GetModuleFileNameW(module, buf.data(), static_cast<DWORD>(buf.size()));
-        buf.resize(n);
-        return buf;
-    }
 
     // GetVersionEx lies to an unmanifested process (every game says Windows 8); ntdll does not.
     static std::string windows_version()
@@ -1232,7 +1209,7 @@ namespace TextureToolkit
                     char vram[48];
                     std::snprintf(vram, sizeof(vram), ", %llu MiB VRAM",
                                   static_cast<unsigned long long>(desc.DedicatedVideoMemory / (1024 * 1024)));
-                    out = narrow(desc.Description) + vram;
+                    out = path_utf8(desc.Description) + vram;
                 }
                 if (adapter != nullptr)
                     adapter->Release();
@@ -1273,7 +1250,7 @@ namespace TextureToolkit
         const Configuration &cfg = ConfigManager::get().get_config();
         const auto on = [](bool b) { return b ? "on" : "off"; };
 
-        const std::filesystem::path exe(module_path(nullptr));
+        const std::filesystem::path exe(module_file_name(nullptr));
         HMODULE self = nullptr;
         GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                            reinterpret_cast<LPCWSTR>(&collect_build_info), &self);
@@ -1281,9 +1258,9 @@ namespace TextureToolkit
         std::vector<InfoRow> rows;
         rows.push_back({ "Texture Toolkit", std::string("v") + TT_VERSION_STRING + (sizeof(void *) == 8 ? " x64" : " x86") +
                                                 ", built " __DATE__ " " __TIME__ });
-        rows.push_back({ "Game", narrow(exe.filename().wstring()) });
-        rows.push_back({ "Game folder", narrow(exe.parent_path().wstring()) });
-        rows.push_back({ "Loaded from", narrow(module_path(self)) });
+        rows.push_back({ "Game", path_utf8(exe.filename()) });
+        rows.push_back({ "Game folder", path_utf8(exe.parent_path()) });
+        rows.push_back({ "Loaded from", path_utf8(module_file_name(self)) });
         rows.push_back({ "Windows", windows_version() });
         rows.push_back({ "Graphics API", graphics_api_name() });
         rows.push_back({ "GPU", gpu_description() });
@@ -1311,7 +1288,7 @@ namespace TextureToolkit
         rows.push_back({ "Auto-dump", on(tm.auto_dump) });
         rows.push_back({ "Verbose log", on(cfg.verbose) });
         rows.push_back({ "Panel key", hotkey_name(cfg.hotkey) });
-        rows.push_back({ "Resource root", narrow(tm.get_resource_root().wstring()) });
+        rows.push_back({ "Resource root", path_utf8(tm.get_resource_root()) });
 
         const unsigned long long mins = GetTickCount64() / 60000ULL - s_session_start_min;
         char up[48];

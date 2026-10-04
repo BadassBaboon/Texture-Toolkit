@@ -526,7 +526,8 @@ namespace TextureToolkit
             TextureToolkitUI::toggle_visibility();
             bool visible = TextureToolkitUI::is_visible();
             Logger::get().info("[UI] Direct hotkey poll triggered UI toggle. Visibility = " + std::to_string(visible));
-            // Cursor visibility is handled per-frame by feed_overlay_mouse (software cursor).
+            // The cursor follows: feed_overlay_mouse takes it while the panel is open, and
+            // release_overlay_mouse below gives the game its own back once it closes.
         }
         s_key_was_down = key_is_down;
 

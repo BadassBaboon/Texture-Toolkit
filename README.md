@@ -40,7 +40,7 @@ Dumping lives here too: **Auto-dump** saves every texture to `TT/dump` as it loa
 
 The inspector beside the list previews the selected texture on a checkerboard, so transparency reads as transparency: the injected replacement, the live original while it is on screen, or the dumped `.dds` read back from disk. Below it are the dimensions, mip count, data size, format, the compressed and sRGB flags, and the D3D11 bind, usage, and misc flags. Copy the hash or dump the texture from here, and drag the gap between the panes to resize them.
 
-**Mod files** is for replacements only: the switches for replacing textures and accepting Special K names, how many files were found, applied and refused, Reload, and the [texture mods](#texture-mods) with their load order. **Settings** holds the overlay options and the folder locations, saved to the ini as they change. **Diagnostics** has "Log this frame", which writes every texture drawn in the next frame to the log, the verbose logging switch, and the details of the build that is running.
+**Mod files** is for replacements only: the switches for replacing textures and accepting Special K names, how many files were found, applied and refused, Reload, and the [texture mods](#texture-mods) with their load order. **Settings** holds the overlay options and the folder locations, saved to the ini as they change. **Diagnostics** has "Log this frame", which writes every texture drawn in the next frame to the log, the verbose logging switch, and Build Info: the game, Windows, GPU, other software hooked into the game, and every setting, with a Copy button that puts it all on the clipboard for a bug report.
 
 ## Building
 
@@ -103,7 +103,7 @@ Verbose=0
 - `ShowOSDBanner`: show the startup banner.
 - `Verbose`: write per-texture debug lines to the log; leave off for normal use, since it slows the game. It also writes a `[Timing]` line every five seconds: how many frames took over 20 ms, and for each hook how long Texture Toolkit's own work in it took (calls, total, average, worst), so a stutter can be traced to us or ruled out. It can be switched from the panel's Diagnostics page.
 
-Toggling a checkbox in the panel writes its new value back to this file. The mod load order and
+Flipping a switch in the panel writes its new value back to this file, one key at a time, so comments and anything else you add by hand are kept. The mod load order and
 any mod you switch on or off from the panel are kept in two more sections, `[Mods]` and
 `[ModEnabled]`; see [Texture mods](#texture-mods).
 

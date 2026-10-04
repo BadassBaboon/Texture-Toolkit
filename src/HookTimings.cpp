@@ -74,7 +74,18 @@ namespace TextureToolkit::HookTimings
     {
         if (!enabled())
         {
-            // Start clean when verbose logging is switched back on.
+            // Start clean when verbose logging is switched back on: a window cut short by
+            // switching it off must not have its figures folded into the next report.
+            if (g_window_start != 0)
+            {
+                for (Counter &c : g_counters)
+                {
+                    c.calls.store(0, std::memory_order_relaxed);
+                    c.total.store(0, std::memory_order_relaxed);
+                    c.worst.store(0, std::memory_order_relaxed);
+                }
+                g_frames = g_slow_frames = g_worst_frame = 0;
+            }
             g_last_frame = 0;
             g_window_start = 0;
             return;

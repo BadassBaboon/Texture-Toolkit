@@ -31,7 +31,10 @@ namespace TextureToolkit
     {
         if (TextureToolkitUI::is_visible())
         {
+            // Keys are polled (see feed_overlay_keyboard); handing them to ImGui here as well
+            // would type them twice in a game that does deliver them as messages.
             LRESULT handled = 0;
+            if (msg < WM_KEYFIRST || msg > WM_KEYLAST)
             {
                 ScopedFlag reading_real_input(g_inside_imgui_render);
                 handled = ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);

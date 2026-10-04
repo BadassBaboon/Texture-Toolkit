@@ -22,6 +22,9 @@
 #include <utility>
 #include <imgui.h>
 
+// Defined in imgui_impl_win32.cpp with external linkage but not declared in its header (see Config.cpp).
+ImGuiKey ImGui_ImplWin32_KeyEventToImGuiKey(WPARAM wParam, LPARAM lParam);
+
 namespace TextureToolkit
 {
     using namespace UI;
@@ -121,11 +124,76 @@ namespace TextureToolkit
         io.AddMouseButtonEvent(1, (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0);
         io.AddMouseButtonEvent(2, (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0);
 
-        // Feed the [ and ] keys here too (same reliable point as the mouse poll, before
-        // NewFrame). The UI reads ImGui's key state to step through the texture list; the
-        // poll in draw_ui itself returns nothing on some titles.
-        io.AddKeyEvent(ImGuiKey_LeftBracket,  (GetAsyncKeyState(VK_OEM_4) & 0x8000) != 0);
-        io.AddKeyEvent(ImGuiKey_RightBracket, (GetAsyncKeyState(VK_OEM_6) & 0x8000) != 0);
+        feed_overlay_keyboard(hwnd);
+    }
+
+    // The keyboard, polled the same way as the mouse rather than taken from window messages. A
+    // game reading its keyboard through DirectInput (Bully, for one) may never let a keystroke
+    // become a window message at all, so nothing typed reached the panel's search box however the
+    // messages were handled. Polling sees every key in every game, and the messages, which are
+    // still kept from the game, are no longer fed to ImGui, so nothing is ever typed twice.
+    static bool s_key_held[256] = {};
+    static ULONGLONG s_key_repeat_at[256] = {};
+
+    void TextureToolkitUI::feed_overlay_keyboard(HWND hwnd)
+    {
+        ImGuiIO &io = ImGui::GetIO();
+
+        // Callers hold the g_inside_imgui_render exemption, so these read the real keyboard.
+        BYTE state[256] = {};
+        for (int vk = 1; vk < 255; ++vk)
+            if (GetAsyncKeyState(vk) & 0x8000)
+                state[vk] = 0x80;
+        if (GetKeyState(VK_CAPITAL) & 1)
+            state[VK_CAPITAL] |= 1;
+
+        const bool ctrl = (state[VK_CONTROL] & 0x80) != 0;
+        const bool alt = (state[VK_MENU] & 0x80) != 0;
+        io.AddKeyEvent(ImGuiMod_Ctrl, ctrl);
+        io.AddKeyEvent(ImGuiMod_Shift, (state[VK_SHIFT] & 0x80) != 0);
+        io.AddKeyEvent(ImGuiMod_Alt, alt);
+        io.AddKeyEvent(ImGuiMod_Super, ((state[VK_LWIN] | state[VK_RWIN]) & 0x80) != 0);
+
+        const HKL layout = GetKeyboardLayout(hwnd != nullptr ? GetWindowThreadProcessId(hwnd, nullptr) : 0);
+        const ULONGLONG now = GetTickCount64();
+        constexpr ULONGLONG kRepeatDelayMs = 400, kRepeatRateMs = 35;
+
+        for (int vk = 1; vk < 255; ++vk)
+        {
+            const bool down = (state[vk] & 0x80) != 0;
+            const UINT scan = MapVirtualKeyExW(static_cast<UINT>(vk), MAPVK_VK_TO_VSC, layout);
+
+            // Named keys (arrows, Backspace, Enter, Ctrl+A and the like); ImGui repeats these
+            // itself and ignores an event that does not change a key's state.
+            const ImGuiKey key = ImGui_ImplWin32_KeyEventToImGuiKey(static_cast<WPARAM>(vk), static_cast<LPARAM>(scan) << 16);
+            if (key != ImGuiKey_None)
+                io.AddKeyEvent(key, down);
+
+            // Characters, with our own repeat, since nothing here is a message Windows repeats.
+            bool emit = false;
+            if (down && !s_key_held[vk])
+            {
+                emit = true;
+                s_key_repeat_at[vk] = now + kRepeatDelayMs;
+            }
+            else if (down && now >= s_key_repeat_at[vk])
+            {
+                emit = true;
+                s_key_repeat_at[vk] = now + kRepeatRateMs;
+            }
+            s_key_held[vk] = down;
+
+            // Ctrl without Alt is a shortcut, not text; Ctrl+Alt is AltGr on many layouts and is.
+            if (!emit || (ctrl && !alt))
+                continue;
+            wchar_t chars[8] = {};
+            // Flag 0x4: leave the keyboard's dead-key state alone, so the game's own typing is
+            // not disturbed by our looking.
+            const int n = ToUnicodeEx(static_cast<UINT>(vk), scan, state, chars, 8, 0x4, layout);
+            for (int i = 0; i < n; ++i)
+                if (chars[i] >= 0x20 && chars[i] != 0x7F)
+                    io.AddInputCharacterUTF16(static_cast<ImWchar16>(chars[i]));
+        }
     }
 
     // -------------------------------------------------------------------------------------------
@@ -852,7 +920,8 @@ namespace TextureToolkit
         {
             const bool go_prev = ImGui::IsKeyPressed(ImGuiKey_LeftBracket, false);
             const bool go_next = ImGui::IsKeyPressed(ImGuiKey_RightBracket, false);
-            const int dir = list_hovered ? (go_prev ? -1 : (go_next ? 1 : 0)) : 0;
+            // Not while typing: [ and ] are characters in the search box.
+            const int dir = (list_hovered && !ImGui::GetIO().WantTextInput) ? (go_prev ? -1 : (go_next ? 1 : 0)) : 0;
 
             if (dir != 0 && !shown.empty())
             {

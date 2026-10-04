@@ -23,6 +23,10 @@ namespace TextureToolkit
         // that grab the mouse via exclusive DirectInput and hide the hardware cursor.
         static void feed_overlay_mouse(HWND hwnd);
 
+        // The same for the keyboard: named keys and typed characters, read from the hardware
+        // state rather than window messages. Called by feed_overlay_mouse.
+        static void feed_overlay_keyboard(HWND hwnd);
+
         // Puts the OS cursor's display count back to what it was when the panel opened. Call
         // every frame while the panel is closed; it does nothing unless feed_overlay_mouse
         // changed the count.

@@ -255,7 +255,7 @@ namespace TextureToolkit
         BOOL ret = get().m_orig_peek_message_a(lpMsg, hWnd, wMsgFilterMin, wMsgFilterMax, wRemoveMsg);
         if (ret && TextureToolkitUI::is_visible() && lpMsg != nullptr)
         {
-            if (handle_input_message(lpMsg, (wRemoveMsg & PM_REMOVE) != 0, true))
+            if (handle_input_message(lpMsg, (wRemoveMsg & PM_REMOVE) != 0))
             {
                 lpMsg->message = WM_NULL;
             }
@@ -268,7 +268,7 @@ namespace TextureToolkit
         BOOL ret = get().m_orig_peek_message_w(lpMsg, hWnd, wMsgFilterMin, wMsgFilterMax, wRemoveMsg);
         if (ret && TextureToolkitUI::is_visible() && lpMsg != nullptr)
         {
-            if (handle_input_message(lpMsg, (wRemoveMsg & PM_REMOVE) != 0, false))
+            if (handle_input_message(lpMsg, (wRemoveMsg & PM_REMOVE) != 0))
             {
                 lpMsg->message = WM_NULL;
             }
@@ -281,7 +281,7 @@ namespace TextureToolkit
         BOOL ret = get().m_orig_get_message_a(lpMsg, hWnd, wMsgFilterMin, wMsgFilterMax);
         if (ret > 0 && TextureToolkitUI::is_visible() && lpMsg != nullptr)
         {
-            if (handle_input_message(lpMsg, true, true))
+            if (handle_input_message(lpMsg, true))
             {
                 lpMsg->message = WM_NULL;
             }
@@ -294,7 +294,7 @@ namespace TextureToolkit
         BOOL ret = get().m_orig_get_message_w(lpMsg, hWnd, wMsgFilterMin, wMsgFilterMax);
         if (ret > 0 && TextureToolkitUI::is_visible() && lpMsg != nullptr)
         {
-            if (handle_input_message(lpMsg, true, false))
+            if (handle_input_message(lpMsg, true))
             {
                 lpMsg->message = WM_NULL;
             }
@@ -339,78 +339,33 @@ namespace TextureToolkit
         return ret;
     }
 
-    // Takes a message the game just fetched from its queue while the panel is open, hands it to
-    // ImGui, and says whether to blank it so the game never acts on it.
+    // Takes a message the game just fetched from its queue while the panel is open and says
+    // whether to blank it, so the game never acts on it.
     //
-    // Keyboard input is blocked here, in the queue, rather than at dispatch, so games that read
-    // keys straight out of their pump without dispatching are covered too. The catch is that a key
-    // press only becomes a character when the game's pump passes it to TranslateMessage, and a
-    // blanked message never gets there: the panel's search box received no text. So a key press is
-    // translated here first, which posts its WM_CHAR to the queue, where it arrives on the next pump
-    // and is handed to ImGui and blanked in turn. Blanking WM_SYSCHAR as well is what keeps Windows
-    // from beeping at an Alt+key typed into the panel.
+    // Keyboard messages are only blocked here, never passed to ImGui: the panel reads the keyboard
+    // by polling (TextureToolkitUI::feed_overlay_keyboard), because a game reading its keys through
+    // DirectInput may never produce these messages at all, and feeding both would type everything
+    // twice where it does. Blanking WM_SYSCHAR among them keeps Windows from beeping at an Alt+key
+    // typed into the panel. Mouse messages still go to ImGui, for the wheel.
     //
     // `removed` is false for a PeekMessage that leaves the message queued: it will be fetched again,
-    // so it is blanked now but fed and translated only once, when it is actually taken. `ansi` says
-    // which encoding a character arrived in (PeekMessageA/GetMessageA deliver the code page's,
-    // whatever the window's own is), since the ImGui backend assumes the window's.
-    bool DInput8Hook::handle_input_message(LPMSG lpMsg, bool removed, bool ansi)
+    // so it is blanked now but handed over only once, when it is actually taken.
+    bool DInput8Hook::handle_input_message(LPMSG lpMsg, bool removed)
     {
         if (lpMsg == nullptr) return false;
 
-        if (lpMsg->message == WM_INPUT)
+        const UINT msg = lpMsg->message;
+        if (msg == WM_INPUT || (msg >= WM_KEYFIRST && msg <= WM_KEYLAST))
             return true;
 
-        const UINT msg = lpMsg->message;
-        if (!((msg >= WM_KEYFIRST && msg <= WM_KEYLAST) || (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST)))
+        if (msg < WM_MOUSEFIRST || msg > WM_MOUSELAST)
             return false;
 
-        if (!removed)
-            return true;
-
-        if (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN)
-            TranslateMessage(lpMsg);
-
-        if (msg == WM_CHAR)
+        if (removed)
         {
-            ImGuiIO &io = ImGui::GetIO();
-            if (!ansi)
-            {
-                io.AddInputCharacterUTF16(static_cast<ImWchar16>(lpMsg->wParam));
-            }
-            else
-            {
-                // A double-byte code page sends a character as a lead byte and a trail byte, in
-                // two messages.
-                static thread_local char s_lead = 0;
-                const char byte = static_cast<char>(lpMsg->wParam & 0xFF);
-                char bytes[2] = { byte, 0 };
-                int len = 1;
-                if (s_lead != 0)
-                {
-                    bytes[0] = s_lead;
-                    bytes[1] = byte;
-                    len = 2;
-                    s_lead = 0;
-                }
-                else if (IsDBCSLeadByte(static_cast<BYTE>(byte)))
-                {
-                    s_lead = byte;
-                    return true;
-                }
-                wchar_t wide[2] = {};
-                const int n = MultiByteToWideChar(CP_ACP, 0, bytes, len, wide, 2);
-                for (int i = 0; i < n; ++i)
-                    io.AddInputCharacterUTF16(static_cast<ImWchar16>(wide[i]));
-            }
-            return true;
+            ScopedFlag reading_real_input(g_inside_imgui_render);
+            ImGui_ImplWin32_WndProcHandler(lpMsg->hwnd, msg, lpMsg->wParam, lpMsg->lParam);
         }
-
-        if (msg == WM_SYSCHAR || msg == WM_DEADCHAR || msg == WM_SYSDEADCHAR)
-            return true; // not text for the panel; blanked so DefWindowProc never beeps at it
-
-        ScopedFlag reading_real_input(g_inside_imgui_render);
-        ImGui_ImplWin32_WndProcHandler(lpMsg->hwnd, msg, lpMsg->wParam, lpMsg->lParam);
         return true; // Block input message from reaching the game
     }
 }

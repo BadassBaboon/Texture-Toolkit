@@ -119,13 +119,17 @@ them, so every existing mod keeps working.
   already tracked in the list; they are hidden at once now.
 - A folder path containing a character outside the system code page could throw while the panel
   drew it.
-- **Nothing could be typed into the panel's search box.** Key presses were taken from the game in
-  its message queue, before its own `TranslateMessage` turns them into characters, so no character
-  ever existed. A key press is now translated before it is taken, and the character it produces
-  is handed to the panel in the encoding it actually arrived in, so text outside English is not
-  garbled either. Alt+key no longer makes Windows beep while the panel is open.
-- **Keys and clicks could reach ImGui twice** when a game peeked at its queue without removing the
-  message; they are handed over only when the message is actually taken.
+- **Nothing could be typed into the panel's search box.** The panel took its keys from the
+  game's window messages, and a game reading its keyboard through DirectInput, Bully among them,
+  may never turn a keystroke into a message at all; where messages did arrive, they were taken
+  before the game's own `TranslateMessage` could make characters of them. The panel now reads the
+  keyboard the way it already read the mouse, from the hardware state each frame, and turns key
+  presses into characters with the active keyboard layout (Shift, Caps Lock and AltGr included),
+  with key repeat. Window messages are still kept from the game but no longer fed to the panel, so
+  nothing is typed twice where both exist. Alt+key no longer makes Windows beep while the panel is
+  open, and `[` and `]` type into the search box instead of stepping through the list.
+- **Clicks could reach ImGui twice** when a game peeked at its queue without removing the message;
+  they are handed over only when the message is actually taken.
 - **The mouse cursor could stay hidden after the panel closed.** The OS cursor's display count was
   pinned to hidden while the panel was open and never put back, so a game that shows the Windows
   cursor had none afterwards. The count it had is restored when the panel closes, and ImGui's

@@ -13,6 +13,53 @@ namespace TextureToolkit
 {
     namespace
     {
+        // A DLL's own name and version, from its version resource: what Explorer shows under
+        // Properties > Details. Proxy DLLs are named after the system file they stand in for, so
+        // this is the only way to tell Ultimate ASI Loader from ReShade from DXVK by file alone.
+        struct FileVersion
+        {
+            std::string product;
+            std::string version;
+        };
+
+        FileVersion file_version(const std::filesystem::path &path)
+        {
+            FileVersion out;
+            DWORD handle = 0;
+            const DWORD size = GetFileVersionInfoSizeW(path.c_str(), &handle);
+            if (size == 0)
+                return out;
+            std::vector<unsigned char> data(size);
+            if (!GetFileVersionInfoW(path.c_str(), 0, size, data.data()))
+                return out;
+
+            // The numeric version, as "6.8.0" (a trailing .0 build dropped).
+            VS_FIXEDFILEINFO *fixed = nullptr;
+            UINT len = 0;
+            if (VerQueryValueW(data.data(), L"\\", reinterpret_cast<void **>(&fixed), &len) && fixed != nullptr &&
+                len >= sizeof(VS_FIXEDFILEINFO))
+            {
+                const unsigned v[4] = { HIWORD(fixed->dwFileVersionMS), LOWORD(fixed->dwFileVersionMS),
+                                        HIWORD(fixed->dwFileVersionLS), LOWORD(fixed->dwFileVersionLS) };
+                out.version = std::to_string(v[0]) + "." + std::to_string(v[1]) + "." + std::to_string(v[2]);
+                if (v[3] != 0)
+                    out.version += "." + std::to_string(v[3]);
+            }
+
+            // ProductName in the first language the resource carries.
+            struct Translation { WORD language, codepage; } *tr = nullptr;
+            if (VerQueryValueW(data.data(), L"\\VarFileInfo\\Translation", reinterpret_cast<void **>(&tr), &len) &&
+                tr != nullptr && len >= sizeof(Translation))
+            {
+                wchar_t key[64];
+                swprintf_s(key, L"\\StringFileInfo\\%04x%04x\\ProductName", tr->language, tr->codepage);
+                wchar_t *name = nullptr;
+                if (VerQueryValueW(data.data(), key, reinterpret_cast<void **>(&name), &len) && name != nullptr && len > 1)
+                    out.product = path_utf8(std::filesystem::path(std::wstring(name, len - 1)));
+            }
+            return out;
+        }
+
         std::string join(const std::vector<std::string> &items)
         {
             std::string out;
@@ -51,9 +98,12 @@ namespace TextureToolkit
             const bool in_game_dir = _wcsicmp(path.parent_path().wstring().c_str(), game_dir.c_str()) == 0;
 
             if (GetProcAddress(modules[i], "ReShadeRegisterAddon") != nullptr)
-                add("ReShade (" + path_utf8(path.filename()) + ")");
-            else if (name.find(L"reshade") != std::wstring::npos)
-                add("ReShade add-on");
+            {
+                const FileVersion fv = file_version(path);
+                add("ReShade" + (fv.version.empty() ? std::string() : " " + fv.version) + " (" + path_utf8(path.filename()) + ")");
+            }
+            else if (name.find(L".addon") != std::wstring::npos || name.find(L"reshade") != std::wstring::npos)
+                add("ReShade add-on (" + path_utf8(path.filename()) + ")"); // .addon, .addon32, .addon64
             else if (name == L"specialk32.dll" || name == L"specialk64.dll")
                 add("Special K");
             else if (name.rfind(L"rtsshooks", 0) == 0)
@@ -65,8 +115,17 @@ namespace TextureToolkit
             else if (name.rfind(L"graphics-hook", 0) == 0)
                 add("OBS game capture");
             else if (in_game_dir && (name == L"d3d9.dll" || name == L"d3d8.dll" || name == L"d3d11.dll" ||
-                                     name == L"dxgi.dll" || name == L"dinput8.dll" || name == L"ddraw.dll"))
-                add(path_utf8(path.filename()) + " in the game folder");
+                                     name == L"dxgi.dll" || name == L"dinput8.dll" || name == L"ddraw.dll" ||
+                                     name == L"winmm.dll" || name == L"version.dll" || name == L"dsound.dll"))
+            {
+                // Say what the proxy actually is, when it says so itself: an ASI loader, DXVK, a
+                // d3d8-to-d3d9 converter. Without a product name, at least where it sits.
+                const FileVersion fv = file_version(path);
+                std::string what = path_utf8(path.filename()) + " in the game folder";
+                if (!fv.product.empty())
+                    what += ": " + fv.product + (fv.version.empty() ? std::string() : " " + fv.version);
+                add(what);
+            }
         }
         return found.empty() ? std::string("none detected") : join(found);
     }

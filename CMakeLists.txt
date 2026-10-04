@@ -107,7 +107,7 @@ target_compile_definitions(TextureToolkit PRIVATE
     ImTextureID=ImU64
 )
 
-target_link_libraries(TextureToolkit PRIVATE Shlwapi d3d9 d3d11 dxgi Psapi)
+target_link_libraries(TextureToolkit PRIVATE Shlwapi d3d9 d3d11 dxgi Psapi Version)
 
 # Headless preview of the overlay panel: renders the real draw_ui() against the real TextureManager
 # on an offscreen D3D11 device and writes a PNG. A development tool for working on the UI without
@@ -123,5 +123,5 @@ if(TT_BUILD_UI_PREVIEW)
         _CRT_SECURE_NO_WARNINGS
         ImTextureID=ImU64
     )
-    target_link_libraries(TextureToolkitUIPreview PRIVATE Shlwapi d3d9 d3d11 dxgi Psapi windowscodecs ole32)
+    target_link_libraries(TextureToolkitUIPreview PRIVATE Shlwapi d3d9 d3d11 dxgi Psapi Version windowscodecs ole32)
 endif()

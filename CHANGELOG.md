@@ -57,7 +57,9 @@ them, so every existing mod keeps working.
   the game, says which unsupported graphics API is loaded when no Direct3D 9 or 11 device appears
   (Direct3D 12, Vulkan, DirectX 8 or 10, OpenGL), points at another overlay owning Present when
   frames never reach us, and catches a new case: frames presented but no texture ever seen, the
-  mark of a wrapper or an upload path we do not watch.
+  mark of a wrapper or an upload path we do not watch. Software is named from each DLL's own
+  version resource, so a proxy DLL in the game folder reads as what it is ("dinput8.dll in the game
+  folder: Ultimate ASI Loader 9.7.2", "ReShade 6.8.0 (d3d9.dll)"), and ReShade add-ons by file.
 - **Per-hook timings in the verbose log.** Every five seconds a `[Timing]` line gives the frame
   count, how many frames took over 20 ms and the worst one, and for texture uploads, texture binds
   and the overlay on each API, how many calls there were and how long Texture Toolkit's own part of

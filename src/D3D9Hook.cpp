@@ -9,6 +9,7 @@
 #include "IATHook.h"
 #include "TextureManager.h"
 #include "TextureToolkitUI.h"
+#include "UITheme.h"
 #include "Config.h"
 #include "Logger.h"
 #include <atomic>
@@ -479,7 +480,7 @@ namespace TextureToolkit
         }
 
         ImGui::CreateContext();
-        ImGui::StyleColorsDark();
+        UI::init();
 
         wchar_t exe_path[MAX_PATH] = L"";
         GetModuleFileNameW(nullptr, exe_path, ARRAYSIZE(exe_path));

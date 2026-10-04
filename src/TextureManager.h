@@ -19,7 +19,8 @@ namespace TextureToolkit
         ORIGINAL = 0,
         INJECTED = 1,   // a replacement is built AND bound in place of the original
         DUMPED = 2,
-        PENDING = 3     // an inject file exists for this hash but is not applied (yet, or at all)
+        PENDING = 3,    // an inject file exists for this hash but is not applied yet
+        FAILED = 4      // an inject file exists, was tried, and could not be loaded
     };
 
     struct TextureDetails

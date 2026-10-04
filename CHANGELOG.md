@@ -29,6 +29,26 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
   is. Art the game uploads but never draws with, such as livery pieces composited into a render
   target, is tracked and then filtered straight back out, which reads as the tool failing to see it.
 
+### Changed
+- **A redesigned panel.** A sidebar splits it into Textures, Mod files, Settings and Diagnostics
+  pages, with figures for tracked, injected, not applied and dumped textures, switches in place of
+  checkboxes, status shown as coloured labels, and Segoe UI and Consolas in place of the built-in
+  pixel font. The startup banner matches it, and no longer takes a window of its own.
+- The texture list draws only the rows on screen. It used to submit every row every frame, which
+  is a few thousand in a game like Saints Row 2.
+- Column headers sort the list. The format column uses the short names modders use (RGBA8, BC3,
+  BC7 sRGB, DXT5); the inspector still gives the full one, and search matches both.
+- The inspector previews on a checkerboard, so transparent pixels read as transparent.
+
+### Fixed
+- **An inject file refused when its texture first loaded was never counted as failed.** Only a
+  file retried later by hot reload was recorded, but most files exist before the game starts and
+  fail on the first try, so the panel said "0 failed" while the texture sat at Pending for good. It
+  is counted now, and a known-bad file is no longer retried on every re-upload of its texture.
+  Reload still clears the record, so a fixed file is tried again.
+- A refused file shows as **Failed** rather than Pending. Pending said it would apply, and it never
+  would.
+
 ## [1.1.0] - 2026-08-26
 
 Games that never showed a texture now work, and two ways a game could stall are gone. Nothing here

@@ -1273,10 +1273,17 @@ namespace TextureToolkit
         bool via_sk_name = false;
         std::filesystem::path inject_path = find_injection_path(hash, sk_hash, &via_sk_name);
         details.injected_via_sk_name = via_sk_name;
+        // A file that fails here is recorded as failed, as the hot-reload path already did. Most
+        // inject files exist before the game starts, so this is where most failures happen, and
+        // without the record the panel said "0 failed" while the texture sat at Pending for good.
+        // Recording it also stops every re-upload of the texture from retrying a file already
+        // known to be broken; Reload clears the list, so a fixed file is tried again.
         if (enable_injection && !inject_path.empty() &&
-            m_d3d9_replacements.find(hash) == m_d3d9_replacements.end())
+            m_d3d9_replacements.find(hash) == m_d3d9_replacements.end() &&
+            m_failed_injections.find(hash) == m_failed_injections.end())
         {
-            build_replacement9(device, hash, inject_path, original_levels, details);
+            if (!build_replacement9(device, hash, inject_path, original_levels, details))
+                m_failed_injections.insert(hash);
         }
         else if (m_d3d9_replacements.find(hash) != m_d3d9_replacements.end())
         {
@@ -1668,10 +1675,13 @@ namespace TextureToolkit
         bool via_sk_name = false;
         std::filesystem::path inject_path = find_injection_path(hash, sk_hash, &via_sk_name);
         details.injected_via_sk_name = via_sk_name;
+        // See the Direct3D 9 path: a failure here is recorded, and not retried on every re-upload.
         if (enable_injection && !inject_path.empty() &&
-            m_d3d11_replacements.find(hash) == m_d3d11_replacements.end())
+            m_d3d11_replacements.find(hash) == m_d3d11_replacements.end() &&
+            m_failed_injections.find(hash) == m_failed_injections.end())
         {
-            build_replacement11(device, hash, inject_path, original_levels, details);
+            if (!build_replacement11(device, hash, inject_path, original_levels, details))
+                m_failed_injections.insert(hash);
         }
         else if (m_d3d11_replacements.find(hash) != m_d3d11_replacements.end())
         {
@@ -1829,10 +1839,13 @@ namespace TextureToolkit
             // file exists hid a real bug: two mipmapped textures showed as injected for weeks
             // while their replacement was built and never bound. A file that is present but not
             // applied is PENDING, which is a question the user can act on.
+            // A file already tried and refused is FAILED, not PENDING: pending promises it will
+            // apply, and that one never will until it is fixed and Reload is pressed.
             if (pair.second.replacement_handle != 0)
                 pair.second.status = TextureStatus::INJECTED;
             else if (m_injected_files.find(pair.first) != m_injected_files.end())
-                pair.second.status = TextureStatus::PENDING;
+                pair.second.status = (m_failed_injections.find(pair.first) != m_failed_injections.end())
+                    ? TextureStatus::FAILED : TextureStatus::PENDING;
 
             if (show_current_frame_only)
             {

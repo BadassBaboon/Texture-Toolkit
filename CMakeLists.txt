@@ -73,6 +73,7 @@ set(SOURCES
     src/DInput8Hook.cpp
     src/TextureManager.cpp
     src/TextureToolkitUI.cpp
+    src/UITheme.cpp
     src/TextureHash.cpp
     src/DDSLoader.cpp
     TextureToolkit.def
@@ -104,3 +105,20 @@ target_compile_definitions(TextureToolkit PRIVATE
 )
 
 target_link_libraries(TextureToolkit PRIVATE Shlwapi d3d9 d3d11 dxgi Psapi)
+
+# Headless preview of the overlay panel: renders the real draw_ui() against the real TextureManager
+# on an offscreen D3D11 device and writes a PNG. A development tool for working on the UI without
+# launching a game. Off by default and never part of the plugin.
+option(TT_BUILD_UI_PREVIEW "Build the headless panel preview tool" OFF)
+if(TT_BUILD_UI_PREVIEW)
+    set(PREVIEW_SOURCES ${SOURCES})
+    list(REMOVE_ITEM PREVIEW_SOURCES src/Main.cpp TextureToolkit.def)
+    add_executable(TextureToolkitUIPreview tools/ui_preview/ui_preview.cpp ${PREVIEW_SOURCES})
+    target_compile_definitions(TextureToolkitUIPreview PRIVATE
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+        _CRT_SECURE_NO_WARNINGS
+        ImTextureID=ImU64
+    )
+    target_link_libraries(TextureToolkitUIPreview PRIVATE Shlwapi d3d9 d3d11 dxgi Psapi windowscodecs ole32)
+endif()

@@ -102,6 +102,10 @@ namespace TextureToolkit
         // Reads back a texture D3DX has just filled and registers it the way an unlock would.
         static void register_loaded_texture(IDirect3DTexture9 *texture, const char *origin);
 
+        // Blink in game for games that do not rebind a texture they think is still bound.
+        void refresh_blink_stages(IDirect3DDevice9 *device);
+        static void release_blink_stages();
+
         static HRESULT STDMETHODCALLTYPE Hooked_SurfaceLockRect(IDirect3DSurface9 *surface, D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD Flags);
         static HRESULT STDMETHODCALLTYPE Hooked_SurfaceUnlockRect(IDirect3DSurface9 *surface);
 

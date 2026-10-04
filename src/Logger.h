@@ -6,9 +6,23 @@
 #include <atomic>
 #include <filesystem>
 #include <memory>
+#include <cstdint>
 
 namespace TextureToolkit
 {
+    // An address as hex, "0x" included, at the width of a pointer on this build (8 digits on
+    // x86, 16 on x64), for log lines.
+    inline std::string ptr_hex(const void *p)
+    {
+        static const char digits[] = "0123456789ABCDEF";
+        uintptr_t v = reinterpret_cast<uintptr_t>(p);
+        std::string out(2 + sizeof(v) * 2, '0');
+        out[1] = 'x';
+        for (size_t i = out.size(); i > 2; v >>= 4)
+            out[--i] = digits[v & 0xF];
+        return out;
+    }
+
     enum class LogLevel
     {
         Debug = 0,

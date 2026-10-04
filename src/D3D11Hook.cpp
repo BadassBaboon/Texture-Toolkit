@@ -308,7 +308,7 @@ namespace TextureToolkit
         if (m_imgui_initialized)
         {
             Logo::release();
-            ImGui_ImplDX11_Shutdown();
+            { ScopedFlag own_draw(s_inside_injection); ImGui_ImplDX11_Shutdown(); }
             ImGui_ImplWin32_Shutdown();
             ImGui::DestroyContext();
             m_imgui_initialized = false;
@@ -420,8 +420,11 @@ namespace TextureToolkit
         ImGui::GetIO().IniFilename = ini_path_str.c_str();
 
         ImGui_ImplWin32_Init(m_hwnd);
-        ImGui_ImplDX11_Init(m_device, m_context);
-        Logo::create_d3d11(m_device);
+        // Every ImGui backend call runs with s_inside_injection set: the panel's own textures (the font
+        // atlas, the logo) and binds must not be tracked as the game's. They were, which put our font in the
+        // texture list and let Blink in game, aimed at it, blink the whole panel.
+        { ScopedFlag own_draw(s_inside_injection); ImGui_ImplDX11_Init(m_device, m_context); }
+        { ScopedFlag own_draw(s_inside_injection); Logo::create_d3d11(m_device); }
 
         m_imgui_initialized = true;
         Logger::get().info("[D3D11Hook] Dear ImGui initialized natively for real game DirectX 11 device.");
@@ -432,8 +435,8 @@ namespace TextureToolkit
         RECT cr = {};
         if (m_hwnd != nullptr)
             GetClientRect(m_hwnd, &cr);
-        Logger::get().info("[D3D11Hook] Overlay bound to swapchain 0x" + std::to_string(reinterpret_cast<uintptr_t>(swapchain)) +
-                           " hwnd 0x" + std::to_string(reinterpret_cast<uintptr_t>(m_hwnd)) +
+        Logger::get().info("[D3D11Hook] Overlay bound to swapchain " + ptr_hex(swapchain) +
+                           " hwnd " + ptr_hex(m_hwnd) +
                            " backbuffer " + std::to_string(desc.BufferDesc.Width) + "x" + std::to_string(desc.BufferDesc.Height) +
                            " client " + std::to_string(cr.right - cr.left) + "x" + std::to_string(cr.bottom - cr.top) +
                            " windowed=" + std::to_string(desc.Windowed ? 1 : 0) +
@@ -504,7 +507,7 @@ namespace TextureToolkit
             io.MouseDrawCursor = false;
         }
 
-        ImGui_ImplDX11_NewFrame();
+        { ScopedFlag own_draw(s_inside_injection); ImGui_ImplDX11_NewFrame(); }
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
 
@@ -556,7 +559,7 @@ namespace TextureToolkit
         if (rtv != nullptr)
         {
             m_context->OMSetRenderTargets(1, &rtv, nullptr);
-            ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+            { ScopedFlag own_draw(s_inside_injection); ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData()); }
             rtv->Release();
         }
 
@@ -717,9 +720,7 @@ namespace TextureToolkit
             if (!s_warned)
             {
                 s_warned = true;
-                Logger::get().warn("[D3D11Hook] More than one swapchain is presenting (0x" +
-                                   std::to_string(reinterpret_cast<uintptr_t>(swapchain)) + " and 0x" +
-                                   std::to_string(reinterpret_cast<uintptr_t>(get().m_swapchain)) +
+                Logger::get().warn("[D3D11Hook] More than one swapchain is presenting (" + ptr_hex(swapchain) + " and " + ptr_hex(get().m_swapchain) +
                                    "); the overlay draws into each of them.");
             }
         }
@@ -739,7 +740,9 @@ namespace TextureToolkit
         if (original == nullptr)
             return;
 
-        if (ppShaderResourceViews == nullptr || NumViews == 0)
+        // Our own drawing (the panel, its previews) is passed through untouched: it is not the
+        // game's, and a preview of the selected texture must not blink with it.
+        if (ppShaderResourceViews == nullptr || NumViews == 0 || s_inside_injection)
         {
             original(context, StartSlot, NumViews, ppShaderResourceViews);
             return;
@@ -804,7 +807,7 @@ namespace TextureToolkit
             if (s_logged_maps < 20)
             {
                 s_logged_maps++;
-                Logger::get().debug("[D3D11Hook] Hooked_Map: resource=0x" + std::to_string(reinterpret_cast<uintptr_t>(pResource)));
+                Logger::get().debug("[D3D11Hook] Hooked_Map: resource=" + ptr_hex(pResource));
             }
 
             MappedResourceData data;
@@ -865,7 +868,7 @@ namespace TextureToolkit
                     if (s_logged_unmaps < 20)
                     {
                         s_logged_unmaps++;
-                        Logger::get().debug("[D3D11Hook] Hooked_Unmap: Registering texture=0x" + std::to_string(reinterpret_cast<uintptr_t>(pResource)));
+                        Logger::get().debug("[D3D11Hook] Hooked_Unmap: Registering texture=" + ptr_hex(pResource));
                     }
 
                     ID3D11Device *device = nullptr;

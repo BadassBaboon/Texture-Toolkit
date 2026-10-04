@@ -422,8 +422,8 @@ namespace TextureToolkit
 
     static bool dxgi_format_is_compressed(DXGI_FORMAT f)
     {
-        return f >= DXGI_FORMAT_BC1_TYPELESS && f <= DXGI_FORMAT_BC5_SNORM
-            || f >= DXGI_FORMAT_BC6H_TYPELESS && f <= DXGI_FORMAT_BC7_UNORM_SRGB;
+        return (f >= DXGI_FORMAT_BC1_TYPELESS && f <= DXGI_FORMAT_BC5_SNORM)
+            || (f >= DXGI_FORMAT_BC6H_TYPELESS && f <= DXGI_FORMAT_BC7_UNORM_SRGB);
     }
 
     // TYPELESS formats cannot back a shader resource view, and most DDS tools cannot read
@@ -565,6 +565,36 @@ namespace TextureToolkit
         constexpr double kBlinkPeriodMs = 600.0;
         const double ms = static_cast<double>(HookTimings::now()) / HookTimings::ticks_per_ms();
         return std::fmod(ms, kBlinkPeriodMs) >= kBlinkPeriodMs * 0.5;
+    }
+
+    bool TextureManager::is_highlight_texture9(IDirect3DBaseTexture9 *texture) const
+    {
+        const uint64_t target = m_highlight_hash.load(std::memory_order_relaxed);
+        if (target == 0 || !highlight_selected || texture == nullptr)
+            return false;
+        uint64_t hash = 0;
+        DWORD size = sizeof(hash);
+        return SUCCEEDED(texture->GetPrivateData(TT_HASH_GUID, &hash, &size)) && size == sizeof(hash) && hash == target;
+    }
+
+    void TextureManager::release_d3d9_game_references()
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        release_preview();
+        m_preview_target_hash = 0; // re-pinned on the texture's next bind, after the Reset
+        for (auto it = m_readback_queue.begin(); it != m_readback_queue.end();)
+        {
+            if (it->tex9 != nullptr)
+            {
+                // Not lost: queued again, and taken on the texture's next bind after the Reset.
+                m_pending_dumps.insert(it->hash);
+                it->tex9->Release();
+                it = m_readback_queue.erase(it);
+            }
+            else
+                ++it;
+        }
+        m_bind_generation.fetch_add(1, std::memory_order_relaxed);
     }
 
     void TextureManager::set_preview_target(uint64_t hash)

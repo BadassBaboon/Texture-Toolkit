@@ -28,8 +28,7 @@ namespace TextureToolkit
             MH_STATUS status = MH_CreateHook(target, detour, reinterpret_cast<void **>(original));
             if (status != MH_OK && status != MH_ERROR_ALREADY_CREATED)
             {
-                Logger::get().error("[HookManager] Failed to create hook at address 0x" +
-                    std::to_string(reinterpret_cast<uintptr_t>(target)) + ", MH_STATUS: " + std::to_string(status));
+                Logger::get().error("[HookManager] Failed to create hook at address " + ptr_hex(target) + ", MH_STATUS: " + std::to_string(status));
                 return false;
             }
             return true;
@@ -41,8 +40,7 @@ namespace TextureToolkit
             MH_STATUS status = MH_EnableHook(target);
             if (status != MH_OK && status != MH_ERROR_ENABLED)
             {
-                Logger::get().error("[HookManager] Failed to enable hook at address 0x" +
-                    std::to_string(reinterpret_cast<uintptr_t>(target)) + ", MH_STATUS: " + std::to_string(status));
+                Logger::get().error("[HookManager] Failed to enable hook at address " + ptr_hex(target) + ", MH_STATUS: " + std::to_string(status));
                 return false;
             }
             m_active_hooks[target] = nullptr;
@@ -60,16 +58,14 @@ namespace TextureToolkit
             MH_STATUS status = MH_CreateHook(target, detour, reinterpret_cast<void **>(original));
             if (status != MH_OK && status != MH_ERROR_ALREADY_CREATED)
             {
-                Logger::get().error("[HookManager] Failed to create hook at address 0x" + 
-                    std::to_string(reinterpret_cast<uintptr_t>(target)) + ", MH_STATUS: " + std::to_string(status));
+                Logger::get().error("[HookManager] Failed to create hook at address " + ptr_hex(target) + ", MH_STATUS: " + std::to_string(status));
                 return false;
             }
 
             status = MH_EnableHook(target);
             if (status != MH_OK && status != MH_ERROR_ENABLED)
             {
-                Logger::get().error("[HookManager] Failed to enable hook at address 0x" + 
-                    std::to_string(reinterpret_cast<uintptr_t>(target)) + ", MH_STATUS: " + std::to_string(status));
+                Logger::get().error("[HookManager] Failed to enable hook at address " + ptr_hex(target) + ", MH_STATUS: " + std::to_string(status));
                 return false;
             }
 

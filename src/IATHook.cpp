@@ -2,6 +2,7 @@
 #include "Logger.h"
 #include <vector>
 #include <algorithm>
+#include <cstring>
 
 namespace TextureToolkit
 {

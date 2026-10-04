@@ -31,7 +31,9 @@ them, so every existing mod keeps working.
   the thing it is drawn on can be found by eye instead of by elimination. On by default, switched in
   the inspector, and saved as `HighlightSelected`. Taken from Special K's "Highlight Selected
   Texture in Game": the texture is bound as nothing for half of each blink, which both APIs allow,
-  and only while the Textures page is open.
+  and only while the Textures page is open. Direct3D 9 games that bind a texture once and leave it
+  bound (Bully, for one) are re-applied once a frame, so the blink does not freeze there; the
+  panel's own preview never blinks.
 - **Texture mods.** Every folder in `TT` other than `dump` and `inject` is loaded as a mod of its
   own, subfolders included, so a downloaded mod no longer has to be merged into `inject`. The Mod
   files page lists each one with a switch and up and down buttons for the load order: where two
@@ -112,6 +114,21 @@ them, so every existing mod keeps working.
 - The inspector previews on a checkerboard, so transparent pixels read as transparent.
 
 ### Fixed
+- **The panel's own textures were listed as the game's.** The font atlas and the logo went through
+  the same hooks as the game's textures, so they appeared in the texture list (a 512x128 entry) and
+  could be dumped, replaced, or picked for Blink in game, which then blinked the whole panel. The
+  overlay's own creation and drawing now bypass the hooks entirely.
+- **A Direct3D 9 preview showing one flat colour instead of the texture.** The overlay drew with
+  whatever minimum mip level, LOD bias or texture-coordinate transform the game had left on the
+  first texture stage, so a mipmapped texture could preview as its smallest mip. Those are now set
+  for the overlay's draw and handed back to the game afterwards.
+- **A Direct3D 9 device reset failing while a texture was selected.** The inspector's live preview
+  and queued dumps held references to the game's textures, and `Reset` fails while anything holds
+  a `D3DPOOL_DEFAULT` resource; on an Alt-Tab or a resolution change the game could lose its
+  device. Those references are now let go before the reset, and queued dumps are taken again on
+  the texture's next draw.
+- Addresses in the log were printed in decimal after a `0x`, and two were cut to 32 bits on the
+  x64 build. They are hex now, at full width on both builds.
 - **A Direct3D 11 crash reading a stale `Map()` pointer.** The bookkeeping between `Map` and `Unmap`
   was keyed on the resource's raw pointer with no reference held. A texture the game released while
   still mapped could be destroyed, its address reused by another, and that one's `Unmap` would hash

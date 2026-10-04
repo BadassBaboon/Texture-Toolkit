@@ -297,8 +297,7 @@ namespace TextureToolkit
         if (!should_log_texture(site, texture))
             return;
 
-        Logger::get().debug(std::string("[") + tag + "] " + site + ": texture=0x" +
-                            std::to_string(reinterpret_cast<uintptr_t>(texture)) + " " +
+        Logger::get().debug(std::string("[") + tag + "] " + site + ": texture=" + ptr_hex(texture) + " " +
                             std::to_string(width) + "x" + std::to_string(height));
     }
 
@@ -455,10 +454,12 @@ namespace TextureToolkit
         if (!m_initialized)
             return;
 
+        release_blink_stages();
+
         if (m_imgui_initialized)
         {
             Logo::release();
-            ImGui_ImplDX9_Shutdown();
+            { ScopedFlag own_draw(s_inside_injection); ImGui_ImplDX9_Shutdown(); }
             ImGui_ImplWin32_Shutdown();
             ImGui::DestroyContext();
             m_imgui_initialized = false;
@@ -505,8 +506,11 @@ namespace TextureToolkit
         ImGui::GetIO().IniFilename = ini_path_str.c_str();
 
         ImGui_ImplWin32_Init(m_hwnd);
-        ImGui_ImplDX9_Init(device);
-        Logo::create_d3d9(device);
+        // Every ImGui backend call runs with s_inside_injection set: the panel's own textures (the font
+        // atlas, the logo) and binds must not be tracked as the game's. They were, which put our font in the
+        // texture list and let Blink in game, aimed at it, blink the whole panel.
+        { ScopedFlag own_draw(s_inside_injection); ImGui_ImplDX9_Init(device); }
+        { ScopedFlag own_draw(s_inside_injection); Logo::create_d3d9(device); }
 
         m_imgui_initialized = true;
         Logger::get().info("[D3D9Hook] Dear ImGui initialized natively for real game DirectX 9 device.");
@@ -552,7 +556,7 @@ namespace TextureToolkit
             io.MouseDrawCursor = false;
         }
 
-        ImGui_ImplDX9_NewFrame();
+        { ScopedFlag own_draw(s_inside_injection); ImGui_ImplDX9_NewFrame(); }
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
 
@@ -566,9 +570,33 @@ namespace TextureToolkit
         // DX9 Present is outside of a scene, so begin one to draw ImGui. Only end the
         // scene if we actually began it (BeginScene fails if one is already open, in which
         // case a matching EndScene would wrongly close the game's scene).
+        ImDrawData *draw_data = ImGui::GetDrawData();
         if (SUCCEEDED(device->BeginScene()))
         {
-            ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
+            ScopedFlag own_draw(s_inside_injection);
+            // The backend sets filtering and addressing on stage 0 but leaves the rest as the game
+            // had it. A game that left a minimum mip level, an LOD bias or a texture-coordinate
+            // transform there makes a mipmapped preview show its last tiny mip (one flat colour)
+            // while the font atlas, which has no mips, still looks right. Pin those for our draw
+            // and give the game its own back afterwards. A state block also works on a pure device,
+            // where the Get* calls fail.
+            IDirect3DStateBlock9 *saved = nullptr;
+            if (draw_data != nullptr && draw_data->TotalVtxCount > 0 &&
+                SUCCEEDED(device->CreateStateBlock(D3DSBT_ALL, &saved)) && saved != nullptr)
+            {
+                device->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+                device->SetSamplerState(0, D3DSAMP_MAXMIPLEVEL, 0);
+                device->SetSamplerState(0, D3DSAMP_MIPMAPLODBIAS, 0);
+                device->SetSamplerState(0, D3DSAMP_SRGBTEXTURE, FALSE);
+                device->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
+                device->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
+            }
+            ImGui_ImplDX9_RenderDrawData(draw_data);
+            if (saved != nullptr)
+            {
+                saved->Apply();
+                saved->Release();
+            }
             device->EndScene();
         }
     }
@@ -617,6 +645,7 @@ namespace TextureToolkit
                 HookTimings::Scope timing(HookTimings::Site::Overlay);
                 get().render_imgui(device);
             }
+            get().refresh_blink_stages(device);
             HRESULT hr = get().m_orig_present(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
             s_in_present = false;
             return hr;
@@ -639,6 +668,7 @@ namespace TextureToolkit
                 HookTimings::Scope timing(HookTimings::Site::Overlay);
                 get().render_imgui(device);
             }
+            get().refresh_blink_stages(device);
             HRESULT hr = get().m_orig_present_ex(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
             s_in_present = false;
             return hr;
@@ -660,6 +690,7 @@ namespace TextureToolkit
                 HookTimings::Scope timing(HookTimings::Site::Overlay);
                 get().render_imgui(get().m_device);
             }
+            get().refresh_blink_stages(get().m_device);
             HRESULT hr = get().m_orig_swapchain_present(swapchain, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
             s_in_present = false;
             return hr;
@@ -671,14 +702,19 @@ namespace TextureToolkit
     {
         if (get().m_imgui_initialized)
         {
-            ImGui_ImplDX9_InvalidateDeviceObjects();
+            { ScopedFlag own_draw(s_inside_injection); ImGui_ImplDX9_InvalidateDeviceObjects(); }
         }
+
+        // Reset fails while anything still holds a DEFAULT-pool resource, so every reference we keep
+        // on the game's textures goes first: Blink's stages, the pinned preview, queued readbacks.
+        release_blink_stages();
+        TextureManager::get().release_d3d9_game_references();
 
         HRESULT hr = get().m_orig_reset(device, pPresentationParameters);
 
         if (SUCCEEDED(hr) && get().m_imgui_initialized)
         {
-            ImGui_ImplDX9_CreateDeviceObjects();
+            { ScopedFlag own_draw(s_inside_injection); ImGui_ImplDX9_CreateDeviceObjects(); }
         }
 
         return hr;
@@ -753,8 +789,7 @@ namespace TextureToolkit
                     HookManager::get().enable_hook(vtable[20]);
                 }
 
-                Logger::get().info(std::string("[D3D9Hook] Hooked texture LockRect/UnlockRect on vtable 0x") +
-                                   hex_string(static_cast<DWORD>(reinterpret_cast<uintptr_t>(vtable))) +
+                Logger::get().info(std::string("[D3D9Hook] Hooked texture LockRect/UnlockRect on vtable ") + ptr_hex(vtable) +
                                    " (pool=" + ((Pool == D3DPOOL_MANAGED) ? "MANAGED" : (Pool == D3DPOOL_DEFAULT) ? "DEFAULT" : "other") +
                                    ", lock=" + (ok_lock ? "ok" : "FAILED") +
                                    ", unlock=" + (ok_unlock ? "ok" : "FAILED") + ")");
@@ -780,8 +815,7 @@ namespace TextureToolkit
                         HookManager::get().enable_hook(surface_vtable[14]);
                     }
 
-                    Logger::get().info(std::string("[D3D9Hook] Hooked surface LockRect/UnlockRect on vtable 0x") +
-                                       hex_string(static_cast<DWORD>(reinterpret_cast<uintptr_t>(surface_vtable))) +
+                    Logger::get().info(std::string("[D3D9Hook] Hooked surface LockRect/UnlockRect on vtable ") + ptr_hex(surface_vtable) +
                                        " (lock=" + (ok_lock ? "ok" : "FAILED") +
                                        ", unlock=" + (ok_unlock ? "ok" : "FAILED") + ")");
                 }
@@ -881,8 +915,70 @@ namespace TextureToolkit
         return unlock_original(texture, Level);
     }
 
+    // Blink in game, for games that bind a texture once and do not bind it again while they think
+    // it is still bound (Bully among them): whatever we substituted at that one bind would stay,
+    // and the blink would freeze. The stages holding the selected texture are remembered here, with
+    // a reference so the texture cannot go away under us, and re-applied once a frame at Present.
+    static constexpr DWORD kBlinkStages = 16;
+    static IDirect3DBaseTexture9 *s_blink_stage[kBlinkStages] = {};
+    // What we last handed the device for that stage (compared only, never dereferenced).
+    static IDirect3DBaseTexture9 *s_blink_bound[kBlinkStages] = {};
+
+    static void set_blink_stage(DWORD stage, IDirect3DBaseTexture9 *texture)
+    {
+        if (stage >= kBlinkStages || s_blink_stage[stage] == texture)
+            return;
+        if (texture != nullptr)
+            texture->AddRef();
+        if (s_blink_stage[stage] != nullptr)
+            s_blink_stage[stage]->Release();
+        s_blink_stage[stage] = texture;
+    }
+
+    void D3D9Hook::refresh_blink_stages(IDirect3DDevice9 *device)
+    {
+        TextureManager &tm = TextureManager::get();
+        for (DWORD stage = 0; stage < kBlinkStages; ++stage)
+        {
+            IDirect3DBaseTexture9 *tex = s_blink_stage[stage];
+            if (tex == nullptr)
+                continue;
+            // A state block can change the stage without passing through SetTexture. If the stage
+            // no longer holds what we put there, it is the game's again: leave it alone. (GetTexture
+            // fails on a pure device; then there is nothing to compare, and the stage is refreshed.)
+            IDirect3DBaseTexture9 *current = nullptr;
+            if (SUCCEEDED(device->GetTexture(stage, &current)))
+            {
+                if (current != nullptr)
+                    current->Release();
+                if (current != s_blink_bound[stage])
+                {
+                    set_blink_stage(stage, nullptr);
+                    continue;
+                }
+            }
+            // What a bind of it would get right now: hidden, its replacement, or itself.
+            s_blink_bound[stage] = tm.get_replacement_texture9(tex);
+            m_orig_set_texture(device, stage, s_blink_bound[stage]);
+            // No longer the target: it is now bound as it normally would be, so let it go.
+            if (!tm.is_highlight_texture9(tex))
+                set_blink_stage(stage, nullptr);
+        }
+    }
+
+    void D3D9Hook::release_blink_stages()
+    {
+        for (DWORD stage = 0; stage < kBlinkStages; ++stage)
+            set_blink_stage(stage, nullptr);
+    }
+
     HRESULT STDMETHODCALLTYPE D3D9Hook::Hooked_SetTexture(IDirect3DDevice9 *device, DWORD Stage, IDirect3DBaseTexture9 *pTexture)
     {
+        // Our own drawing (the panel, its previews) is passed through untouched: it is not the
+        // game's, and a preview of the selected texture must not blink with it.
+        if (s_inside_injection)
+            return get().m_orig_set_texture(device, Stage, pTexture);
+
         const bool capturing = (pTexture != nullptr) && s_capture_frame.load(std::memory_order_acquire);
 
         if (capturing)
@@ -908,7 +1004,7 @@ namespace TextureToolkit
         if (!capturing && pTexture != nullptr && should_log_texture("SetTexture", pTexture))
         {
             Logger::get().debug("[D3D9Hook] SetTexture: Stage=" + std::to_string(Stage) +
-                                " pTexture=0x" + std::to_string(reinterpret_cast<uintptr_t>(pTexture)) +
+                                " pTexture=" + ptr_hex(pTexture) +
                                 describe_bound_texture(pTexture));
         }
 
@@ -916,6 +1012,9 @@ namespace TextureToolkit
         {
             HookTimings::Scope timing(HookTimings::Site::D3D9Bind);
             pReplacement = TextureManager::get().get_replacement_texture9(pTexture);
+            set_blink_stage(Stage, TextureManager::get().is_highlight_texture9(pTexture) ? pTexture : nullptr);
+            if (Stage < kBlinkStages)
+                s_blink_bound[Stage] = pReplacement;
         }
         return get().m_orig_set_texture(device, Stage, pReplacement);
     }

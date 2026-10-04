@@ -10,6 +10,8 @@
 #include <mutex>
 #include <filesystem>
 #include <atomic>
+#include <thread>
+#include <condition_variable>
 #include "TextureHash.h"
 
 namespace TextureToolkit
@@ -97,6 +99,14 @@ namespace TextureToolkit
         // each blink, so whatever it is drawn on flickers in the game and can be found by eye.
         // Atomic: written by the panel each frame, read by every bind.
         void set_highlight_target(uint64_t hash) { m_highlight_hash.store(hash, std::memory_order_relaxed); }
+
+        // Whether `texture` is the one Blink in game is aimed at right now.
+        bool is_highlight_texture9(IDirect3DBaseTexture9 *texture) const;
+
+        // Drops every reference held on one of the game's D3D9 textures (the pinned preview, queued
+        // dump readbacks). Called before IDirect3DDevice9::Reset, which fails while anything still
+        // holds a DEFAULT-pool resource.
+        void release_d3d9_game_references();
 
         // Active Texture Queries
         // hidden_out receives how many tracked textures the scene filter removed. A texture the

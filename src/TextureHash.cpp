@@ -108,13 +108,6 @@ namespace TextureToolkit
         return h.finish();
     }
 
-    uint64_t compute_hash64(const uint8_t *data, size_t size)
-    {
-        Hash64 h;
-        h.update(data, size);
-        return h.finish();
-    }
-
     namespace
     {
         // Reflected CRC-32C polynomial, the one the SSE4.2 crc32 instruction implements.
@@ -157,13 +150,6 @@ namespace TextureToolkit
         for (uint32_t y = 0; y < rows; ++y)
             crc = crc32c_append(crc, data + static_cast<size_t>(y) * src_pitch, tight_row);
         return crc;
-    }
-
-    std::string format_sk_hash_hex(uint32_t hash)
-    {
-        char buf[16];
-        std::snprintf(buf, sizeof(buf), "%08X", hash);
-        return std::string(buf);
     }
 
     std::string format_hash_hex(uint64_t hash)

@@ -33,9 +33,6 @@ namespace TextureToolkit
     // any padding between rows is skipped. Streams straight from the mapped pointer: no copy.
     uint64_t compute_hash64_rows(const uint8_t *data, uint32_t src_pitch, uint32_t tight_row, uint32_t rows);
 
-    // Hashes a contiguous buffer. Identical to compute_hash64_rows over the same bytes.
-    uint64_t compute_hash64(const uint8_t *data, size_t size);
-
     // Formats a hash as the 16-character hex string used for dump/inject filenames.
     std::string format_hash_hex(uint64_t hash);
 
@@ -45,7 +42,4 @@ namespace TextureToolkit
     // snapshotting after level 0; that snapshot is the value its filenames carry, so mip 0 alone
     // reproduces it.
     uint32_t compute_crc32c_rows(const uint8_t *data, uint32_t src_pitch, uint32_t tight_row, uint32_t rows);
-
-    // 8-character hex, the width Special K uses.
-    std::string format_sk_hash_hex(uint32_t hash);
 }

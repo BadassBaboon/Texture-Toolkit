@@ -12,6 +12,21 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-10-05
+
+### Changed
+- **A newly installed mod goes in at the top of the load order.** New mods used to start at the
+  bottom, below `TT/inject`, so any texture they shared with it came from `TT/inject` instead. A
+  PlayStation button pack copied into an install whose `TT/inject` already held the same menu sprite
+  sheet showed a mix of Xbox and PlayStation prompts until it was moved up by hand. The mod installed
+  last now wins, and applies in full in one step. Its place is saved the first time it is seen, so
+  anything arranged by hand stays where it was put. This replaces the 1.2.0 rule that `TT/inject`
+  starts at the top: to keep your own edits ahead of a mod, move `inject` above it.
+- A mod partly covered by one above it says so on its own line, in the warning colour, with what to
+  do about it. It used to be a few faint words in the middle of the file count.
+- Folders whose names start with `dump` are never loaded as mods, not just `dump` itself, so a dump
+  renamed to `dump-garage` stays on disk without the next Reload injecting it back.
+
 ## [1.2.0] - 2026-10-04
 
 A redesigned panel, texture mods with a load order, and fixes carried over from
@@ -390,7 +405,8 @@ First public release.
   rather than guessed at, so adding one later makes new textures moddable without changing a hash
   that already exists.
 
-[Unreleased]: https://github.com/BadassBaboon/Texture-Toolkit/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/BadassBaboon/Texture-Toolkit/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/BadassBaboon/Texture-Toolkit/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/BadassBaboon/Texture-Toolkit/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/BadassBaboon/Texture-Toolkit/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/BadassBaboon/Texture-Toolkit/releases/tag/v1.0.0

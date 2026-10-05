@@ -112,7 +112,8 @@ Flipping a switch in the panel writes its new value back to this file, one key a
 ## Texture mods
 
 `TT/inject` is for your own replacements. A mod you download, or one you publish, goes in a folder
-of its own next to it, and every folder in `TT` other than `dump` and `inject` is loaded as a mod:
+of its own next to it, and every folder in `TT` other than `inject` and anything whose name starts
+with `dump` is loaded as a mod (so a dump renamed to `dump-garage` is kept, not injected back):
 
 ```
 TT/
@@ -124,9 +125,11 @@ TT/
 
 Each mod shows on the panel's **Mod files** page with a switch to turn it on or off, and the
 buttons to move it up or down the load order. Where two sources ship a file for the same texture,
-the one higher in the list wins. `TT/inject` is in that list too, at the top by default, so your own
-edits win over any mod until you move a mod above it. A new mod starts at the bottom. Changes apply
-at once, and **Reload replacements** picks up a mod folder added while the game runs.
+the one higher in the list wins, and the page says when some of a mod's files are covered by one
+above it. `TT/inject` is in that list too. A mod the list has not seen before goes in at the top, so
+the one you installed last wins and applies in full straight away; after that it stays wherever you
+put it. If your own edits in `TT/inject` should beat a mod, move `inject` above it. Changes apply at
+once, and **Reload replacements** picks up a mod folder added while the game runs.
 
 A mod can describe itself with a `mod.ini` in its folder. Every key is optional; without the file
 the folder name is shown and the mod is on. [`tools/mod.ini.example`](tools/mod.ini.example) is a

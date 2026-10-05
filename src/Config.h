@@ -60,7 +60,7 @@ namespace TextureToolkit
         // When true, per-texture/per-hook Debug logging is written (very chatty).
         bool verbose = false;
 
-        // Texture mods: every folder under the resource root other than dump/ and inject/ is a
+        // Texture mods: every folder under the resource root other than inject/ and dump* is a
         // mod (see TextureManager::rescan_injected). mod_load_order is [Mods] LoadOrder, folder
         // names highest priority first, with kBaseModId standing for the inject folder itself;
         // mods it does not name go after everything it does. mod_enabled is [ModEnabled], one

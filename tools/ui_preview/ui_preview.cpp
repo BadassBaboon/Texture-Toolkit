@@ -44,7 +44,7 @@ namespace
 {
     struct Action
     {
-        enum Kind { Move, Click, Key, Panel } kind;
+        enum Kind { Move, Click, Key, Panel, Wheel } kind;
         int frame;
         float x = 0, y = 0;
         char key = 0;
@@ -145,6 +145,8 @@ namespace
                 out.push_back({ Action::Key, f, 0, 0, k });
             else if (std::sscanf(a.c_str(), "panel:%c@%d", &k, &f) == 2)
                 out.push_back({ Action::Panel, f, 0, 0, k });
+            else if (std::sscanf(a.c_str(), "wheel:%f@%d", &y, &f) == 2)
+                out.push_back({ Action::Wheel, f, 0, y });
             else if (std::sscanf(a.c_str(), "size:%ux%u", &sw, &sh) == 2)
             {
                 w = sw;
@@ -207,6 +209,15 @@ int main(int argc, char **argv)
     TextureManager &tm = TextureManager::get();
     const std::filesystem::path inject = tm.get_inject_dir();
 
+    bool with_mods = false;
+    for (int i = 2; i < argc; ++i)
+    {
+        if (std::strcmp(argv[i], "mods") == 0)
+            with_mods = true;
+        if (std::strcmp(argv[i], "nobanner") == 0)
+            ConfigManager::get().get_config().show_osd_banner = false;
+    }
+
     std::vector<std::vector<uint8_t>> all_pixels;
     for (const Spec &s : specs)
     {
@@ -228,6 +239,20 @@ int main(int argc, char **argv)
             sub.data = big.data();
             sub.row_pitch = s.w * 2 * 4;
             save_dds_multi_mip(path_utf8(inject / name), desc, { sub }, 1, 1);
+
+            // "mods": the same texture shipped again by a mod, the situation the load order
+            // decides. A dump renamed to dump-garage holds one too, and must not count as a mod.
+            if (with_mods)
+            {
+                const std::filesystem::path tt = inject.parent_path();
+                std::error_code mec;
+                std::filesystem::create_directories(tt / "DualShock" / "buttons", mec);
+                std::filesystem::create_directories(tt / "dump-garage", mec);
+                std::vector<uint8_t> alt = make_pixels(s.w * 2, s.h * 2, s.kind + 1, s.alpha);
+                sub.data = alt.data();
+                save_dds_multi_mip(path_utf8(tt / "DualShock" / "buttons" / name), desc, { sub }, 1, 1);
+                save_dds_multi_mip(path_utf8(tt / "dump-garage" / name), desc, { sub }, 1, 1);
+            }
         }
         else if (s.role == Spec::BrokenInject)
         {
@@ -240,6 +265,26 @@ int main(int argc, char **argv)
         }
     }
     tm.rescan_injected();
+
+    // A second mod arriving after the first scan. It sorts after DualShock, so landing above it
+    // proves the first mod's placement was saved rather than recomputed alphabetically each scan.
+    if (with_mods)
+    {
+        const std::filesystem::path zeta = inject.parent_path() / "ZetaPack";
+        std::error_code zec;
+        std::filesystem::create_directories(zeta, zec);
+        std::FILE *f = nullptr;
+        if (_wfopen_s(&f, (zeta / "mod.ini").c_str(), L"wb") == 0 && f)
+        {
+            const char ini[] = "[Mod]\r\nName=Zeta Pack\r\nAuthor=Preview\r\nVersion=1.0\r\n"
+                               "Description=Added after the first scan.\r\n";
+            std::fwrite(ini, 1, sizeof(ini) - 1, f);
+            std::fclose(f);
+        }
+        tm.rescan_injected();
+        for (const auto &m : tm.get_mods())
+            std::printf("load order: %ls  (%zu files, %zu used)\n", m.id.c_str(), m.file_count, m.provided);
+    }
 
     std::vector<FakeTexture> fakes;
     for (size_t i = 0; i < std::size(specs); ++i)
@@ -313,6 +358,8 @@ int main(int argc, char **argv)
                 io.AddKeyEvent(a.key == '[' ? ImGuiKey_LeftBracket : ImGuiKey_RightBracket, a.frame == f);
             if (a.kind == Action::Panel && a.frame == f)
                 TextureToolkitUI::set_visible(a.key == '1');
+            if (a.kind == Action::Wheel && a.frame == f)
+                io.AddMouseWheelEvent(0.0f, a.y);
         }
 
         // What a game's draw calls do: bind each visible texture, which is what marks it as

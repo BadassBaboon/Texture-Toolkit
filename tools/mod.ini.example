@@ -20,7 +20,8 @@
 ;
 ;   4. Press "Reload replacements" on the panel's Mod files page, or restart the game. The
 ;      mod appears there with a switch, and arrows to move it up or down the load order.
-;      Where two mods replace the same texture, the one higher in the list wins.
+;      Where two mods replace the same texture, the one higher in the list wins. A new mod
+;      goes in at the top, so it applies in full as soon as it is installed.
 ;
 ; To share the mod, zip the whole folder. Players unzip it into their TT folder.
 ;

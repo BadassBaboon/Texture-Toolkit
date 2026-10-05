@@ -12,6 +12,7 @@
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
+#include <iterator>
 #include <cstring>
 #include <cwctype>
 
@@ -1186,8 +1187,10 @@ namespace TextureToolkit
             if (!it->is_directory(dec) || dec)
                 continue;
             const std::wstring folder = it->path().filename().wstring();
+            // Anything starting with "dump" is ours too, not just dump itself: renaming a scene's
+            // dump to dump-garage keeps it around without the next Reload injecting it back.
             if (folder.empty() || folder[0] == L'.' ||
-                _wcsicmp(folder.c_str(), L"dump") == 0 || _wcsicmp(folder.c_str(), L"inject") == 0)
+                _wcsnicmp(folder.c_str(), L"dump", 4) == 0 || _wcsicmp(folder.c_str(), L"inject") == 0)
                 continue;
 
             const std::filesystem::path manifest = it->path() / "mod.ini";
@@ -1232,8 +1235,15 @@ namespace TextureToolkit
         }
         pool.push_back(std::move(base));
 
-        // The configured order first, then whatever it does not name: the inject folder ahead of
-        // the rest if it was not placed, and new mods after everything, alphabetically.
+        // The configured order, with the inject folder at its head if it was never placed. Then
+        // whatever the order does not name yet goes ABOVE all of it, alphabetically.
+        //
+        // A mod nobody has placed is one just installed, and installing it is the most recent thing
+        // anyone asked for. Putting it last meant it lost every texture it shares with what was
+        // already there, so a controller-prompt pack dropped in beside an inject folder that held
+        // the same sprite sheet came out half Xbox, half PlayStation until it was moved up by hand.
+        // rescan_injected writes the result back the first time a mod is seen, so this placement
+        // happens once and anything arranged by hand stays put.
         std::vector<ModInfo> ordered;
         const auto take = [&pool, &ordered](const std::wstring &id)
         {
@@ -1257,8 +1267,7 @@ namespace TextureToolkit
             std::rotate(ordered.begin(), ordered.end() - 1, ordered.end());
         }
         std::sort(pool.begin(), pool.end(), [](const ModInfo &a, const ModInfo &b) { return _wcsicmp(a.id.c_str(), b.id.c_str()) < 0; });
-        for (ModInfo &m : pool)
-            ordered.push_back(std::move(m));
+        ordered.insert(ordered.begin(), std::make_move_iterator(pool.begin()), std::make_move_iterator(pool.end()));
         return ordered;
     }
 
@@ -1268,6 +1277,28 @@ namespace TextureToolkit
         // thread, so scanning a slow disk (or a resource root on a network share) while holding it
         // stalls texture tracking for as long as the scan takes. Build the new map first, then swap.
         std::vector<ModInfo> mods = discover_mods();
+
+        // A mod the saved order does not name yet was just placed on top by discover_mods. Write the
+        // order back now, so the next new mod goes above this one instead of the two tying for the
+        // top alphabetically on every scan.
+        {
+            ConfigManager &cm = ConfigManager::get();
+            const std::vector<std::wstring> &saved = cm.get_config().mod_load_order;
+            const bool has_new = std::any_of(mods.begin(), mods.end(), [&saved](const ModInfo &m) {
+                return std::none_of(saved.begin(), saved.end(), [&m](const std::wstring &s) {
+                    return _wcsicmp(s.c_str(), m.id.c_str()) == 0;
+                });
+            });
+            if (has_new)
+            {
+                std::vector<std::wstring> order;
+                order.reserve(mods.size());
+                for (const ModInfo &m : mods)
+                    order.push_back(m.id);
+                cm.get_config().mod_load_order = std::move(order);
+                cm.save();
+            }
+        }
 
         // Highest priority first, and a hash already supplied is never replaced, so the first
         // enabled source that ships a file for a hash is the one used.

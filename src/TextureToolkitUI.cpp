@@ -1095,9 +1095,9 @@ namespace TextureToolkit
     static void DrawModsCard(TextureManager &tm)
     {
         BeginCard("mods", "Mods and load order",
-                  "Any folder in TT other than dump and inject is a texture mod. Where two ship the same "
-                  "texture, the one higher in this list wins. An optional mod.ini in the folder gives it a "
-                  "name, author, version and description.");
+                  "Any folder in TT is a texture mod, except inject and folders starting with dump. Where "
+                  "two ship the same texture, the one higher in this list wins, and a new mod goes in at "
+                  "the top. An optional mod.ini in the folder gives it a name, author, version and description.");
 
         const std::vector<TextureManager::ModInfo> mods = tm.get_mods();
         const ImVec2 sw = ToggleSwitchSize();
@@ -1165,10 +1165,19 @@ namespace TextureToolkit
                 if (!live)
                     detail = m.is_base ? "Off while Replace textures is off" : "Off";
                 else
-                {
                     detail = std::to_string(m.file_count) + (m.file_count == 1 ? " file" : " files");
-                    if (m.provided < m.file_count)
-                        detail += ", " + std::to_string(m.file_count - m.provided) + " covered by a mod above";
+
+                // Its own line, in the warning colour. Buried mid-sentence in faint text it was easy
+                // to miss, and a mod that is only partly applied looks broken rather than outranked.
+                if (live && m.provided < m.file_count)
+                {
+                    const size_t covered = m.file_count - m.provided;
+                    std::string note = std::to_string(covered) + (covered == 1 ? " file is" : " files are") +
+                                       " replaced by a mod higher in the list. Move this one up to use " +
+                                       (covered == 1 ? "it." : "them.");
+                    ImGui::PushStyleColor(ImGuiCol_Text, pal().warn);
+                    ImGui::TextWrapped("%s", note.c_str());
+                    ImGui::PopStyleColor();
                 }
                 if (!m.is_base)
                 {

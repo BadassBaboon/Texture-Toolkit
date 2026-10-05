@@ -263,9 +263,9 @@ namespace TextureToolkit
            << L"; Diagnostics: 1 = verbose per-texture debug logging (slow)\r\n"
            << L"Verbose=" << (m_config.verbose ? 1 : 0) << L"\r\n\r\n"
            << L"[Mods]\r\n"
-           << L"; Every folder in ResourceRoot other than dump and inject is a texture mod.\r\n"
+           << L"; Every folder in ResourceRoot is a texture mod, except inject and any starting with dump.\r\n"
            << L"; Load order, highest priority first, separated by ';'. \"inject\" is the inject folder.\r\n"
-           << L"; Mods not listed load after the ones that are. Set from the panel's Mod files page.\r\n"
+           << L"; A new mod is added at the top when first seen. Set from the panel's Mod files page.\r\n"
            << L"LoadOrder=";
         for (size_t i = 0; i < m_config.mod_load_order.size(); ++i)
             ss << (i ? L";" : L"") << m_config.mod_load_order[i];

@@ -18,6 +18,11 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
   screen at any resolution (1440p 100%, 4K 150%, 1080p 75%), with text rasterised at the real
   pixel density rather than stretched, so it stays sharp. The Settings page can switch this off and
   set a size by hand, saved as `UIScale` in TextureToolkit.ini (`0` is automatic).
+- **Controllers no longer blocked while panel shown** Previous versions returned a zeroed out
+  input state for all input device.   This works for keyboard and mouse, but for controllers a zero
+  value for an analog often means hard left/up.  Changed to simply not block controllers - which
+  doesn't interfere with the panel and also allows the game to be played with controller while
+  the overlay is shown.
 
 ## [1.2.1] - 2026-10-05
 

@@ -1,4 +1,6 @@
 #include "Config.h"
+#include <cwchar>
+#include <algorithm>
 #include "Logger.h"
 #include "PathUtil.h"
 #include <fstream>
@@ -138,6 +140,14 @@ namespace TextureToolkit
         // OSD
         m_config.show_osd_banner = GetPrivateProfileIntW(L"TextureToolkit", L"ShowOSDBanner", 1, ini_w) != 0;
 
+        // Panel scale. Read as text: the profile API has no float reader, and 1.25 is the point.
+        {
+            wchar_t scale_buf[32] = L"";
+            GetPrivateProfileStringW(L"TextureToolkit", L"UIScale", L"0", scale_buf, 32, ini_w);
+            const float v = std::wcstof(scale_buf, nullptr);
+            m_config.ui_scale = (v > 0.0f) ? (std::max)(0.5f, (std::min)(v, 4.0f)) : 0.0f;
+        }
+
         // Diagnostics
         m_config.verbose = GetPrivateProfileIntW(L"TextureToolkit", L"Verbose", 0, ini_w) != 0;
 
@@ -179,6 +189,7 @@ namespace TextureToolkit
                            " AcceptSpecialKNames=" + (m_config.accept_sk_names ? "1" : "0") +
                            " HighlightSelected=" + (m_config.highlight_selected ? "1" : "0") +
                            " ShowOSDBanner=" + (m_config.show_osd_banner ? "1" : "0") +
+                           " UIScale=" + (m_config.ui_scale > 0.0f ? std::to_string(m_config.ui_scale).substr(0, 4) : std::string("auto")) +
                            " Verbose=" + (m_config.verbose ? "1" : "0"));
     }
 
@@ -203,6 +214,7 @@ namespace TextureToolkit
                            " AcceptSpecialKNames=" + (m_config.accept_sk_names ? "1" : "0") +
                            " HighlightSelected=" + (m_config.highlight_selected ? "1" : "0") +
                            " ShowOSDBanner=" + (m_config.show_osd_banner ? "1" : "0") +
+                           " UIScale=" + (m_config.ui_scale > 0.0f ? std::to_string(m_config.ui_scale).substr(0, 4) : std::string("auto")) +
                            " Verbose=" + (m_config.verbose ? "1" : "0"));
     }
 
@@ -226,6 +238,12 @@ namespace TextureToolkit
         put(L"TextureToolkit", L"AcceptSpecialKNames", flag(m_config.accept_sk_names));
         put(L"TextureToolkit", L"HighlightSelected", flag(m_config.highlight_selected));
         put(L"TextureToolkit", L"ShowOSDBanner", flag(m_config.show_osd_banner));
+        {
+            wchar_t scale_buf[32] = L"0";
+            if (m_config.ui_scale > 0.0f)
+                std::swprintf(scale_buf, 32, L"%.2f", m_config.ui_scale);
+            put(L"TextureToolkit", L"UIScale", scale_buf);
+        }
         put(L"TextureToolkit", L"Verbose", flag(m_config.verbose));
 
         std::wstring order;
@@ -260,6 +278,8 @@ namespace TextureToolkit
            << L"HighlightSelected=" << (m_config.highlight_selected ? 1 : 0) << L"\r\n\r\n"
            << L"; On-Screen Display (OSD)\r\n"
            << L"ShowOSDBanner=" << (m_config.show_osd_banner ? 1 : 0) << L"\r\n\r\n"
+           << L"; Panel size: 0 = follow the resolution (1440p is 1.0), or a scale such as 1.25\r\n"
+           << L"UIScale=0\r\n\r\n"
            << L"; Diagnostics: 1 = verbose per-texture debug logging (slow)\r\n"
            << L"Verbose=" << (m_config.verbose ? 1 : 0) << L"\r\n\r\n"
            << L"[Mods]\r\n"

@@ -1,5 +1,7 @@
 #include "UITheme.h"
+#include "Config.h"
 
+#include <imgui_internal.h>
 #include <windows.h>
 #include <algorithm>
 #include <cmath>
@@ -643,5 +645,86 @@ namespace TextureToolkit::UI
                 dl->AddRectFilled(ImVec2(x, y), ImVec2((std::min)(x + cell, b.x), (std::min)(y + cell, b.y)), light);
         }
         dl->PopClipRect();
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Resolution scaling
+    // ---------------------------------------------------------------------------------------
+    namespace
+    {
+        // The screen height the panel was designed and tuned at.
+        constexpr float kDesignHeight = 1440.0f;
+
+        float g_scale = 1.0f;
+
+        // Highest input event id already converted to ImGui units. ImGui can hold an event over
+        // to the next frame when several arrive at once, so converting everything still queued
+        // would divide a held-over position twice.
+        ImU32 g_last_scaled_event = 0;
+        bool g_any_scaled = false;
+    }
+
+    float scale_for_height(float height)
+    {
+        const float user = ConfigManager::get().get_config().ui_scale;
+        if (user > 0.0f)
+            return (std::max)(0.5f, (std::min)(user, 4.0f));
+        if (height <= 0.0f)
+            return 1.0f;
+        // Below 0.75 the small text stops being readable however proportionate it is.
+        return (std::max)(0.75f, (std::min)(height / kDesignHeight, 3.0f));
+    }
+
+    float current_scale() { return g_scale; }
+
+    void apply_frame_scale()
+    {
+        ImGuiIO &io = ImGui::GetIO();
+        const ImVec2 pixels = io.DisplaySize;
+        if (pixels.x <= 0.0f || pixels.y <= 0.0f)
+            return;
+
+        const float s = scale_for_height(pixels.y);
+        g_scale = s;
+        io.DisplaySize = ImVec2(pixels.x / s, pixels.y / s);
+        io.DisplayFramebufferScale = ImVec2(s, s);
+
+        // Mouse positions reach the queue in pixels, from the window procedure and from the
+        // overlay's own cursor polling alike. Converting them here, in one place, covers both.
+        ImGuiContext &g = *ImGui::GetCurrentContext();
+        for (ImGuiInputEvent &e : g.InputEventsQueue)
+        {
+            if (g_any_scaled && e.EventId <= g_last_scaled_event)
+                continue;
+            if (e.Type == ImGuiInputEventType_MousePos && e.MousePos.PosX != -FLT_MAX)
+            {
+                e.MousePos.PosX /= s;
+                e.MousePos.PosY /= s;
+            }
+            g_last_scaled_event = (std::max)(g_last_scaled_event, e.EventId);
+            g_any_scaled = true;
+        }
+    }
+
+    void flatten_framebuffer_scale(ImDrawData *draw_data)
+    {
+        if (draw_data == nullptr)
+            return;
+        const ImVec2 fb = draw_data->FramebufferScale;
+        if (fb.x == 1.0f && fb.y == 1.0f)
+            return;
+
+        for (ImDrawList *list : draw_data->CmdLists)
+        {
+            for (ImDrawVert &v : list->VtxBuffer)
+            {
+                v.pos.x *= fb.x;
+                v.pos.y *= fb.y;
+            }
+        }
+        draw_data->ScaleClipRects(fb);
+        draw_data->DisplayPos = ImVec2(draw_data->DisplayPos.x * fb.x, draw_data->DisplayPos.y * fb.y);
+        draw_data->DisplaySize = ImVec2(draw_data->DisplaySize.x * fb.x, draw_data->DisplaySize.y * fb.y);
+        draw_data->FramebufferScale = ImVec2(1.0f, 1.0f);
     }
 }

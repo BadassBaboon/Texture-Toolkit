@@ -12,6 +12,13 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
 
 ## [Unreleased]
 
+### Added
+- **The panel scales with the resolution.** It was laid out for 1440p and drawn at that size
+  everywhere, so it looked tiny at 4K and oversized at 1080p. It now takes the same share of the
+  screen at any resolution (1440p 100%, 4K 150%, 1080p 75%), with text rasterised at the real
+  pixel density rather than stretched, so it stays sharp. The Settings page can switch this off and
+  set a size by hand, saved as `UIScale` in TextureToolkit.ini (`0` is automatic).
+
 ## [1.2.1] - 2026-10-05
 
 ### Changed

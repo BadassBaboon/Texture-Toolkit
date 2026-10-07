@@ -93,6 +93,7 @@ ShowCurrentFrameOnly=1
 AcceptSpecialKNames=1
 HighlightSelected=1
 ShowOSDBanner=1
+UIScale=0
 Verbose=0
 ```
 
@@ -105,6 +106,7 @@ Verbose=0
 - `HighlightSelected`: blink the texture selected in the panel magenta, in the game (the inspector's "Blink in game").
 - `AcceptSpecialKNames`: also load files named the way Special K names them. Where both namings exist for the same texture, the file from the source higher in the [load order](#texture-mods) is used; within one folder, our own naming wins.
 - `ShowOSDBanner`: show the startup banner.
+- `UIScale`: the panel's size. `0` (the default) follows the resolution, so the panel takes the same share of the screen everywhere: 1440p is 100%, 4K 150%, 1080p 75%. Any other value, such as `1.25`, is used as is, between 0.5 and 4. Also set from the Settings page.
 - `Verbose`: write per-texture debug lines to the log; leave off for normal use, since it slows the game. It also writes a `[Timing]` line every five seconds: the average frame time and how many frames hitched (took over twice the usual time, and over 20 ms), and for each hook how long Texture Toolkit's own work in it took (calls, total, average, worst), so a stutter can be traced to us or ruled out. While a texture blinks in the game, a `[Blink]` line each second says how often the game drew it. It can be switched from the panel's Diagnostics page.
 
 Flipping a switch in the panel writes its new value back to this file, one key at a time, so comments and anything else you add by hand are kept. The mod load order and any mod you switch on or off from the panel are kept in two more sections, `[Mods]` and `[ModEnabled]`; see [Texture mods](#texture-mods).

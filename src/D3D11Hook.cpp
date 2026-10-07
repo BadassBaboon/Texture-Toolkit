@@ -516,6 +516,7 @@ namespace TextureToolkit
 
         { ScopedFlag own_draw(s_inside_injection); ImGui_ImplDX11_NewFrame(); }
         ImGui_ImplWin32_NewFrame();
+        UI::apply_frame_scale(); // the Direct3D 11 backend honours FramebufferScale itself
         TextureToolkitUI::set_real_delta_time();
         ImGui::NewFrame();
 

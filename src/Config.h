@@ -57,6 +57,10 @@ namespace TextureToolkit
         bool show_osd_banner = true;
         float osd_duration_seconds = 6.0f;
 
+        // UIScale: the panel's size. 0 = follow the resolution (1440p is 1.0, 4K 1.5, 1080p 0.75);
+        // any other value is used as is, between 0.5 and 4.
+        float ui_scale = 0.0f;
+
         // When true, per-texture/per-hook Debug logging is written (very chatty).
         bool verbose = false;
 

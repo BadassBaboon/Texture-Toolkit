@@ -1340,6 +1340,44 @@ namespace TextureToolkit
             {
                 ConfigManager::get().save();
             }
+
+            // Panel size. Automatic keeps the panel the same share of the screen at any resolution.
+            {
+                const ImGuiIO &io = ImGui::GetIO();
+                const int px_w = static_cast<int>(io.DisplaySize.x * io.DisplayFramebufferScale.x + 0.5f);
+                const int px_h = static_cast<int>(io.DisplaySize.y * io.DisplayFramebufferScale.y + 0.5f);
+                char sub[160];
+                std::snprintf(sub, sizeof(sub), "Size the panel to the screen: %d x %d shows it at %d%%. 1440p is 100%%.",
+                              px_w, px_h, static_cast<int>(scale_for_height(static_cast<float>(px_h)) * 100.0f + 0.5f));
+
+                bool automatic = cfg.ui_scale <= 0.0f;
+                if (ToggleRow("Scale with resolution", sub, &automatic))
+                {
+                    // Switching it off keeps the size in use now, so nothing jumps.
+                    cfg.ui_scale = automatic ? 0.0f : current_scale();
+                    ConfigManager::get().save();
+                }
+
+                if (!automatic)
+                {
+                    // Applied when the slider is let go, not while it moves: rescaling the panel
+                    // under the cursor moves the slider's handle relative to it, and the value
+                    // would chase itself.
+                    static int s_percent = 100;
+                    static bool s_dragging = false; // the slider's own state, from last frame
+                    if (!s_dragging)
+                        s_percent = static_cast<int>(cfg.ui_scale * 100.0f + 0.5f);
+                    ImGui::SetNextItemWidth((std::min)(320.0f, ImGui::GetContentRegionAvail().x - 24.0f));
+                    ImGui::SliderInt("##ui_scale", &s_percent, 50, 300, "%d%%", ImGuiSliderFlags_AlwaysClamp);
+                    s_dragging = ImGui::IsItemActive();
+                    if (ImGui::IsItemDeactivatedAfterEdit())
+                    {
+                        cfg.ui_scale = static_cast<float>(s_percent) / 100.0f;
+                        ConfigManager::get().save();
+                    }
+                    ImGui::SetItemTooltip("Drag, then let go to apply. Saved as UIScale in TextureToolkit.ini.");
+                }
+            }
             ImGui::Dummy(ImVec2(0.0f, 2.0f));
             KeyValue("Panel key", hotkey_name(cfg.hotkey).c_str(), false, &pal().accent);
             ImGui::PushFont(nullptr, kSizeSmall);

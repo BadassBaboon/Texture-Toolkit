@@ -625,6 +625,7 @@ namespace TextureToolkit
 
         { ScopedFlag own_draw(s_inside_injection); ImGui_ImplDX9_NewFrame(); }
         ImGui_ImplWin32_NewFrame();
+        UI::apply_frame_scale();
         TextureToolkitUI::set_real_delta_time();
         ImGui::NewFrame();
 
@@ -659,6 +660,9 @@ namespace TextureToolkit
                 device->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
                 device->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
             }
+            // The Direct3D 9 backend ignores FramebufferScale, so the scaled layout is turned back
+            // into pixels for it here.
+            UI::flatten_framebuffer_scale(draw_data);
             ImGui_ImplDX9_RenderDrawData(draw_data);
             if (saved != nullptr)
             {

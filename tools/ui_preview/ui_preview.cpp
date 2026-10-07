@@ -370,15 +370,21 @@ int main(int argc, char **argv)
         tm.on_frame();
 
         ImGui_ImplDX11_NewFrame();
+        // What the Win32 backend does in a game: the display size in pixels, every frame. Then the
+        // same resolution scaling the hooks apply.
+        io.DisplaySize = ImVec2(static_cast<float>(W), static_cast<float>(H));
+        UI::apply_frame_scale();
         ImGui::NewFrame();
 
-        // Something game-like behind the panel, so its translucency shows.
+        // Something game-like behind the panel, so its translucency shows. In ImGui units, which
+        // after scaling are no longer pixels.
+        const ImVec2 ds = io.DisplaySize;
         ImDrawList *bg = ImGui::GetBackgroundDrawList();
-        bg->AddRectFilledMultiColor(ImVec2(0, 0), io.DisplaySize, IM_COL32(48, 64, 92, 255), IM_COL32(120, 92, 70, 255),
+        bg->AddRectFilledMultiColor(ImVec2(0, 0), ds, IM_COL32(48, 64, 92, 255), IM_COL32(120, 92, 70, 255),
                                     IM_COL32(40, 36, 44, 255), IM_COL32(26, 40, 58, 255));
         for (int i = 0; i < 9; ++i)
-            bg->AddCircleFilled(ImVec2(W * (0.1f + 0.1f * i), H * (0.3f + 0.05f * (i % 4))), 60.0f + 14.0f * (i % 3),
-                                IM_COL32(200, 180, 140, 40));
+            bg->AddCircleFilled(ImVec2(ds.x * (0.1f + 0.1f * i), ds.y * (0.3f + 0.05f * (i % 4))),
+                                (60.0f + 14.0f * (i % 3)) * ds.y / 900.0f, IM_COL32(200, 180, 140, 40));
 
         TextureToolkitUI::draw_ui();
         ImGui::Render();

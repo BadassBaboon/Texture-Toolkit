@@ -1121,7 +1121,7 @@ namespace TextureToolkit
     void D3D11Hook::register_update(ID3D11DeviceContext *context, ID3D11Resource *pDstResource, UINT DstSubresource,
                                     const D3D11_BOX *pDstBox, const void *pSrcData, UINT SrcRowPitch)
     {
-        if (s_inside_injection || DstSubresource != 0 || pDstBox != nullptr || pSrcData == nullptr || pDstResource == nullptr)
+        if (s_inside_injection || pSrcData == nullptr || pDstResource == nullptr)
             return;
 
         // Buffers (constant buffers above all) arrive here far more often than textures do.
@@ -1138,6 +1138,23 @@ namespace TextureToolkit
         tex->Release();
         if ((d.BindFlags & D3D11_BIND_SHADER_RESOURCE) == 0)
             return;
+
+        // A box that covers the whole top level is the same upload as no box. L.A. Noire passes one
+        // on every texture it fills, so a null box alone missed nearly everything it draws. Block-
+        // compressed formats may round the far edge up to the next multiple of 4.
+        const bool whole_box = pDstBox == nullptr ||
+                               (pDstBox->left == 0 && pDstBox->top == 0 && pDstBox->front == 0 && pDstBox->back <= 1 &&
+                                pDstBox->right >= d.Width && pDstBox->right <= ((d.Width + 3) & ~3u) &&
+                                pDstBox->bottom >= d.Height && pDstBox->bottom <= ((d.Height + 3) & ~3u));
+        if (DstSubresource != 0 || !whole_box)
+        {
+            static std::atomic<int> s_logged{0};
+            if (DstSubresource == 0 && HookTimings::enabled() && s_logged.fetch_add(1, std::memory_order_relaxed) < 12)
+                Logger::get().debug("[Diag] Partial UpdateSubresource of a " + std::to_string(d.Width) + "x" + std::to_string(d.Height) +
+                                    " texture (format " + std::to_string(d.Format) + "): box " + std::to_string(pDstBox->left) + "," +
+                                    std::to_string(pDstBox->top) + " to " + std::to_string(pDstBox->right) + "," + std::to_string(pDstBox->bottom) + ".");
+            return;
+        }
         s_copy_diag.update_texture.fetch_add(1, std::memory_order_relaxed);
 
         ID3D11Device *device = nullptr;

@@ -41,7 +41,8 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
   `CopyResource` and a whole top-level `CopySubresourceRegion` onto the texture that is drawn,
   including the Direct3D 11.1 `CopySubresourceRegion1`, which is the one The Sims 4 uses.
 - Textures written with `UpdateSubresource` or `UpdateSubresource1`, the other common Direct3D 11
-  upload path, are tracked.
+  upload path, are tracked. A destination box that covers the whole texture counts as a full upload.
+  L.A. Noire passes one on every texture, so its UI, fonts and world textures were never listed.
 - **No overlay in a Direct3D 11 game that presents from a swapchain other than its first, or with
   `Present1`.** Only the first swapchain's `Present` was hooked, on the assumption that every later
   swapchain shares its code, and `IDXGISwapChain1::Present1` was not hooked at all. The Sims 4 makes

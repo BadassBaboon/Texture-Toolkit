@@ -188,6 +188,13 @@ namespace TextureToolkit
         // the bound texture becomes tracked, previewable and injectable.
         void copy_tag9(IDirect3DBaseTexture9 *src, IDirect3DBaseTexture9 *dst);
 
+        // The same for Direct3D 11, where a game fills a STAGING texture through Map/Unmap and then
+        // copies it into the texture it actually draws with. Staging textures can never be bound,
+        // so without this every texture such a game uploads is tracked and never seen in a scene.
+        // Returns whether the source carried a tag (for the copy diagnostics).
+        bool copy_tag11(ID3D11Resource *src, ID3D11Resource *dst);
+        void log_untracked_bind11(ID3D11Resource *res);
+
         // The content hash tagged onto a resource, or 0 if it carries none. Lets the hook layer
         // report what a bound texture is without reaching for the manager's internals.
         uint64_t get_tagged_hash9(IDirect3DBaseTexture9 *texture) const;

@@ -81,6 +81,9 @@ namespace TextureToolkit
     // Hashes drawn this frame, accumulated per thread and merged in batches, so the bind hook does
     // not contend on the manager lock for every bound texture.
     static thread_local std::vector<uint64_t> s_seen_this_frame;
+    // The frame the buffer above was filled in. Deferred contexts bind on worker threads that the
+    // frame hook never runs on, so a buffer is also flushed as soon as its thread sees a new frame.
+    static thread_local uint64_t s_seen_buffer_frame = 0;
 
     static bool is_block_compressed(reshade::api::format format);
     static D3DFORMAT dxgi_to_d3d9_format(reshade::api::format format);
@@ -1483,6 +1486,53 @@ namespace TextureToolkit
         return 0;
     }
 
+    bool TextureManager::copy_tag11(ID3D11Resource *src, ID3D11Resource *dst)
+    {
+        if (src == nullptr || dst == nullptr || src == dst)
+            return false;
+
+        uint64_t hash = 0;
+        UINT size = sizeof(hash);
+        if (FAILED(src->GetPrivateData(TT_HASH_GUID, &size, &hash)) || size != sizeof(hash) || hash == 0)
+            return false;
+
+        // Already carries this content: a game that copies the same staging texture again (or
+        // re-copies after a reset) should not invalidate anything.
+        uint64_t existing = 0;
+        UINT existing_size = sizeof(existing);
+        if (SUCCEEDED(dst->GetPrivateData(TT_HASH_GUID, &existing_size, &existing)) &&
+            existing_size == sizeof(existing) && existing == hash)
+            return true;
+
+        dst->SetPrivateData(TT_HASH_GUID, sizeof(hash), &hash);
+
+        // The record was made from the staging texture, so its D3D11 flags describe that. Describe
+        // the texture that is actually drawn instead.
+        ID3D11Texture2D *tex = nullptr;
+        if (SUCCEEDED(dst->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void **>(&tex))) && tex != nullptr)
+        {
+            D3D11_TEXTURE2D_DESC d = {};
+            tex->GetDesc(&d);
+            tex->Release();
+
+            std::lock_guard<std::mutex> lock(m_mutex);
+            auto it = m_tracked_textures.find(hash);
+            if (it != m_tracked_textures.end())
+            {
+                it->second.bind_flags = d.BindFlags;
+                it->second.usage = static_cast<uint32_t>(d.Usage);
+                it->second.cpu_access = d.CPUAccessFlags;
+                it->second.misc_flags = d.MiscFlags;
+                it->second.mip_levels = d.MipLevels;
+            }
+        }
+
+        // A view of this texture may already have been bound and remembered as "not ours". The bind
+        // cache is invalidated by generation, so move it on; each view is resolved once more.
+        m_bind_generation.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+
     void TextureManager::copy_tag9(IDirect3DBaseTexture9 *src, IDirect3DBaseTexture9 *dst)
     {
         if (src == nullptr || dst == nullptr)
@@ -2023,6 +2073,31 @@ namespace TextureToolkit
         return created;
     }
 
+    // Verbose only: describe the first few textures the game draws that carry no tag, so a log shows
+    // what kind of texture slipped past every upload hook.
+    void TextureManager::log_untracked_bind11(ID3D11Resource *res)
+    {
+        static std::atomic<int> s_logged{0};
+        if (s_logged.load(std::memory_order_relaxed) >= 24)
+            return;
+        ID3D11Texture2D *tex = nullptr;
+        if (FAILED(res->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void **>(&tex))) || tex == nullptr)
+            return;
+        D3D11_TEXTURE2D_DESC d = {};
+        tex->GetDesc(&d);
+        tex->Release();
+        // Render targets and depth buffers are never uploaded; they are not what is missing.
+        if (d.BindFlags & (D3D11_BIND_RENDER_TARGET | D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_UNORDERED_ACCESS))
+            return;
+        if (s_logged.fetch_add(1, std::memory_order_relaxed) >= 24)
+            return;
+        Logger::get().debug("[Diag] Untracked texture bound: " + std::to_string(d.Width) + "x" + std::to_string(d.Height) +
+                            " format=" + std::to_string(d.Format) + " mips=" + std::to_string(d.MipLevels) +
+                            " array=" + std::to_string(d.ArraySize) + " usage=" + std::to_string(d.Usage) +
+                            " bind=" + std::to_string(d.BindFlags) + " cpu=" + std::to_string(d.CPUAccessFlags) +
+                            " misc=" + std::to_string(d.MiscFlags));
+    }
+
     ID3D11ShaderResourceView *TextureManager::get_replacement_srv11(ID3D11ShaderResourceView *orig)
     {
         if (orig == nullptr)
@@ -2047,10 +2122,11 @@ namespace TextureToolkit
                 orig->SetPrivateData(TT_SRV_CACHE_GUID, sizeof(cache), &cache);
 
                 s_seen_this_frame.push_back(cache.hash);
-                if (s_seen_this_frame.size() >= 64)
+                if (s_seen_this_frame.size() >= 64 || s_seen_buffer_frame != frame)
                 {
                     std::lock_guard<std::mutex> lock(m_mutex);
                     flush_seen_locked();
+                    s_seen_buffer_frame = frame;
                 }
             }
 
@@ -2085,6 +2161,8 @@ namespace TextureToolkit
         uint64_t hash = 0;
         UINT size = sizeof(hash);
         HRESULT hr = orig_res->GetPrivateData(TT_HASH_GUID, &size, &hash);
+        if ((FAILED(hr) || size != sizeof(hash)) && HookTimings::enabled())
+            log_untracked_bind11(orig_res);
         orig_res->Release();
         if (FAILED(hr) || size != sizeof(hash))
         {

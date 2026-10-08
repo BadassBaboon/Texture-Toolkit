@@ -24,6 +24,34 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
   doesn't interfere with the panel and also allows the game to be played with controller while
   the overlay is shown.
 
+### Fixed
+- **Direct3D 11 games that draw through deferred contexts showed no textures in the scene, and
+  replacements never reached them.** Binding was hooked on the immediate context only, and a
+  deferred context, which a game fills on worker threads and plays back later, is a separate
+  implementation: on the same device every one of the eight hooked functions sits at a different
+  address. The Sims 4 bound not one texture through the hooks in 45 seconds of play. Contexts of
+  both kinds are now hooked, each call forwarded to the original of the context it was made on.
+  Textures bound on those worker threads were also recorded in a per-thread buffer that only the
+  render thread ever emptied each frame, so they flashed into the scene list and dropped out again.
+  Each thread now hands its buffer over on its first bind of a new frame.
+- **Direct3D 11 textures uploaded through a staging copy never showed in the scene.** A game that
+  fills a staging texture with `Map`/`Unmap` and copies it into the texture it draws had only the
+  staging copy hashed, and a staging texture can never be bound. The Sims 4 does this for every
+  texture: 211 were tracked and "Current scene only" listed none. The content tag now follows
+  `CopyResource` and a whole top-level `CopySubresourceRegion` onto the texture that is drawn,
+  including the Direct3D 11.1 `CopySubresourceRegion1`, which is the one The Sims 4 uses.
+- Textures written with `UpdateSubresource` or `UpdateSubresource1`, the other common Direct3D 11
+  upload path, are tracked.
+- **No overlay in a Direct3D 11 game that presents from a swapchain other than its first, or with
+  `Present1`.** Only the first swapchain's `Present` was hooked, on the assumption that every later
+  swapchain shares its code, and `IDXGISwapChain1::Present1` was not hooked at all. The Sims 4 makes
+  a device and swapchain at startup and its real ones later, and tracked 207 textures without one
+  frame ever passing through the hook, so the panel never opened. Every distinct `Present`,
+  `Present1`, `CreateSwapChain` and `CreateSwapChainForHwnd` is hooked now, each call forwarded to
+  the original of the object it was made on.
+- The startup watchdog blamed OpenGL for a Direct3D 11 game that had created a device but not yet
+  presented a frame through the hook. It now says that a device exists and names the likely causes.
+
 ## [1.2.1] - 2026-10-05
 
 ### Changed

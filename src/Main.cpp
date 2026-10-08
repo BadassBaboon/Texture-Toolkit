@@ -44,7 +44,10 @@ namespace TextureToolkit
             const uint64_t frames9 = D3D9Hook::s_present_count.load(std::memory_order_relaxed);
             const uint64_t frames11 = D3D11Hook::s_present_count.load(std::memory_order_relaxed);
             const bool have_d3d9 = D3D9Hook::get().get_device() != nullptr;
-            const bool have_d3d11 = D3D11Hook::get().get_device() != nullptr;
+            // get_device() is only set when the overlay starts, on the first frame, so on its own it
+            // read "the game made a device but never presented through us" as "no device at all",
+            // and the warning below blamed OpenGL for a Direct3D 11 game.
+            const bool have_d3d11 = D3D11Hook::get().get_device() != nullptr || D3D11Hook::get().saw_device();
             const bool overlay = D3D9Hook::get().overlay_ready() || D3D11Hook::get().overlay_ready();
 
             Logger::get().info("[Watchdog] " + std::to_string(kReportAfterSeconds) + "s status: d3d9_device=" +
@@ -75,8 +78,9 @@ namespace TextureToolkit
                 else
                 {
                     Logger::get().warn("[Watchdog] A device exists but no frame has been presented through our hook. "
-                                       "Most often another overlay loaded after us and took over Present (look at "
-                                       "\"Also hooked into the game\" above), or the game stopped before its first frame.");
+                                       "Either the game presents from a swapchain we never saw created, another "
+                                       "overlay loaded after us and took over presenting (look at \"Also hooked into "
+                                       "the game\" above), or the game is still loading and has not drawn a frame yet.");
                 }
             }
             else if (!overlay)

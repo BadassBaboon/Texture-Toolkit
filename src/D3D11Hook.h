@@ -18,7 +18,7 @@ namespace TextureToolkit
         void shutdown();
 
         void hook_swapchain(IDXGISwapChain *swapchain);
-        void hook_context(ID3D11DeviceContext *context);
+        void hook_context(ID3D11DeviceContext *context, const char *kind);
         void hook_device(ID3D11Device *device);
         void hook_dxgi_factory(IDXGIFactory *factory);
 
@@ -29,6 +29,10 @@ namespace TextureToolkit
         void bootstrap_dxgi_present();
 
         ID3D11Device *get_device() const { return m_device; }
+
+        // Whether the game created a D3D11 device at all. get_device() is only set once the overlay
+        // starts, on the first presented frame, so it cannot tell "no device" from "no frame".
+        bool saw_device() const { return m_orig_create_texture2d != nullptr; }
         bool overlay_ready() const { return m_imgui_initialized; }
 
         // See D3D9Hook::s_present_count.
@@ -79,9 +83,40 @@ namespace TextureToolkit
         static HRESULT STDMETHODCALLTYPE Hooked_CreateSwapChain(IDXGIFactory *factory, IUnknown *pDevice, DXGI_SWAP_CHAIN_DESC *pDesc, IDXGISwapChain **ppSwapChain);
         static HRESULT STDMETHODCALLTYPE Hooked_CreateSwapChainForHwnd(IDXGIFactory2 *factory, IUnknown *pDevice, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1 *pDesc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *pFullscreenDesc, IDXGIOutput *pRestrictToOutput, IDXGISwapChain1 **ppSwapChain);
         static HRESULT STDMETHODCALLTYPE Hooked_Present(IDXGISwapChain *swapchain, UINT SyncInterval, UINT Flags);
+        static HRESULT STDMETHODCALLTYPE Hooked_Present1(IDXGISwapChain1 *swapchain, UINT SyncInterval, UINT Flags,
+                                                         const DXGI_PRESENT_PARAMETERS *pPresentParameters);
+
+        // What both present hooks do before the frame goes out: count it and draw the overlay.
+        void present_overlay(IDXGISwapChain *swapchain);
         static void STDMETHODCALLTYPE Hooked_PSSetShaderResources(ID3D11DeviceContext *context, UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews);
         static void STDMETHODCALLTYPE Hooked_VSSetShaderResources(ID3D11DeviceContext *context, UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews);
         static void STDMETHODCALLTYPE Hooked_CSSetShaderResources(ID3D11DeviceContext *context, UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews);
+
+        // Copies and direct uploads. A game that fills a staging texture and copies it into the one
+        // it draws hands its pixels over in CopyResource / CopySubresourceRegion; one that writes
+        // straight into a default texture does it with UpdateSubresource.
+        typedef void(STDMETHODCALLTYPE *CopyResource_t)(ID3D11DeviceContext *, ID3D11Resource *, ID3D11Resource *);
+        typedef void(STDMETHODCALLTYPE *CopySubresourceRegion_t)(ID3D11DeviceContext *, ID3D11Resource *, UINT, UINT, UINT, UINT,
+                                                                 ID3D11Resource *, UINT, const D3D11_BOX *);
+        typedef void(STDMETHODCALLTYPE *UpdateSubresource_t)(ID3D11DeviceContext *, ID3D11Resource *, UINT, const D3D11_BOX *,
+                                                             const void *, UINT, UINT);
+        static void STDMETHODCALLTYPE Hooked_CopySubresourceRegion1(ID3D11DeviceContext *context, ID3D11Resource *pDstResource, UINT DstSubresource,
+                                                                    UINT DstX, UINT DstY, UINT DstZ, ID3D11Resource *pSrcResource,
+                                                                    UINT SrcSubresource, const D3D11_BOX *pSrcBox, UINT CopyFlags);
+        static void STDMETHODCALLTYPE Hooked_UpdateSubresource1(ID3D11DeviceContext *context, ID3D11Resource *pDstResource, UINT DstSubresource,
+                                                                const D3D11_BOX *pDstBox, const void *pSrcData, UINT SrcRowPitch,
+                                                                UINT SrcDepthPitch, UINT CopyFlags);
+        static void carry_region_tag(ID3D11Resource *pDstResource, UINT DstSubresource, UINT DstX, UINT DstY, UINT DstZ,
+                                     ID3D11Resource *pSrcResource, UINT SrcSubresource, const D3D11_BOX *pSrcBox);
+        static void register_update(ID3D11DeviceContext *context, ID3D11Resource *pDstResource, UINT DstSubresource,
+                                    const D3D11_BOX *pDstBox, const void *pSrcData, UINT SrcRowPitch);
+        static void STDMETHODCALLTYPE Hooked_CopyResource(ID3D11DeviceContext *context, ID3D11Resource *pDstResource, ID3D11Resource *pSrcResource);
+        static void STDMETHODCALLTYPE Hooked_CopySubresourceRegion(ID3D11DeviceContext *context, ID3D11Resource *pDstResource, UINT DstSubresource,
+                                                                   UINT DstX, UINT DstY, UINT DstZ, ID3D11Resource *pSrcResource,
+                                                                   UINT SrcSubresource, const D3D11_BOX *pSrcBox);
+        static void STDMETHODCALLTYPE Hooked_UpdateSubresource(ID3D11DeviceContext *context, ID3D11Resource *pDstResource, UINT DstSubresource,
+                                                               const D3D11_BOX *pDstBox, const void *pSrcData, UINT SrcRowPitch,
+                                                               UINT SrcDepthPitch);
 
         // The three stages differ only in which original they forward to, so the substitution
         // itself lives in one place.
@@ -111,14 +146,6 @@ namespace TextureToolkit
         typedef HRESULT(STDMETHODCALLTYPE *CreateTexture2D_t)(ID3D11Device *, const D3D11_TEXTURE2D_DESC *, const D3D11_SUBRESOURCE_DATA *, ID3D11Texture2D **);
         CreateTexture2D_t m_orig_create_texture2d = nullptr;
 
-        CreateSwapChain_t m_orig_create_swapchain = nullptr;
-        CreateSwapChainForHwnd_t m_orig_create_swapchain_for_hwnd = nullptr;
-        Present_t m_orig_present = nullptr;
-        PSSetShaderResources_t m_orig_ps_set_shader_resources = nullptr;
-        SetShaderResources_t m_orig_vs_set_shader_resources = nullptr;
-        SetShaderResources_t m_orig_cs_set_shader_resources = nullptr;
-        Map_t m_orig_map = nullptr;
-        Unmap_t m_orig_unmap = nullptr;
 
         static HRESULT STDMETHODCALLTYPE Hooked_CreateTexture2D(ID3D11Device *device, const D3D11_TEXTURE2D_DESC *pDesc, const D3D11_SUBRESOURCE_DATA *pInitialData, ID3D11Texture2D **ppTexture2D);
     };

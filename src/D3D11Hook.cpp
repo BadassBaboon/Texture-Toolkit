@@ -1,4 +1,5 @@
 #include "D3D11Hook.h"
+#include <d3d11_1.h>
 #include "HookManager.h"
 #include "IATHook.h"
 #include "TextureManager.h"
@@ -168,6 +169,134 @@ namespace TextureToolkit
         return true;
     }
 
+
+    // ---------------------------------------------------------------------------------------
+    // One original per hooked implementation.
+    //
+    // A swapchain or factory was hooked through the first one the game created, on the assumption
+    // that every later one shares its code. A game that makes a throwaway swapchain at startup and
+    // presents from a different kind later, or that presents with Present1, then never ran a single
+    // frame through our hook: The Sims 4 tracked 207 textures and drew no overlay. Every distinct
+    // function is hooked now, and each call is forwarded to the original belonging to the object
+    // it was made on. MinHook patches the function body and leaves the vtable slot pointing at the
+    // original address, so the slot itself is the key.
+    // ---------------------------------------------------------------------------------------
+    typedef HRESULT(STDMETHODCALLTYPE *PresentFn)(IDXGISwapChain *, UINT, UINT);
+    typedef HRESULT(STDMETHODCALLTYPE *Present1Fn)(IDXGISwapChain1 *, UINT, UINT, const DXGI_PRESENT_PARAMETERS *);
+    typedef HRESULT(STDMETHODCALLTYPE *CreateSwapChainFn)(IDXGIFactory *, IUnknown *, DXGI_SWAP_CHAIN_DESC *, IDXGISwapChain **);
+    typedef HRESULT(STDMETHODCALLTYPE *CreateSwapChainForHwndFn)(IDXGIFactory2 *, IUnknown *, HWND, const DXGI_SWAP_CHAIN_DESC1 *,
+                                                                const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *, IDXGIOutput *, IDXGISwapChain1 **);
+
+    template <typename Fn>
+    struct SlotHooks
+    {
+        struct Entry
+        {
+            void *target;
+            Fn original;
+        };
+
+        static constexpr int kMax = 16;
+        Entry entries[kMax] = {};
+        std::atomic<int> count{0};
+        std::mutex add_mutex;
+
+        // Hooks `target` with `detour` the first time it is seen; true if that happened now. The
+        // entry is published before the hook is armed, so a call landing the instant the patch
+        // goes live always finds its original.
+        bool add(void *target, void *detour)
+        {
+            std::lock_guard<std::mutex> lock(add_mutex);
+            const int n = count.load(std::memory_order_relaxed);
+            for (int i = 0; i < n; ++i)
+                if (entries[i].target == target)
+                    return false;
+            if (n >= kMax)
+                return false;
+
+            Fn original = nullptr;
+            if (!HookManager::get().prepare_hook(target, detour, &original))
+                return false;
+            entries[n].target = target;
+            entries[n].original = original;
+            count.store(n + 1, std::memory_order_release);
+            HookManager::get().enable_hook(target);
+            return true;
+        }
+
+        Fn find(void *target) const
+        {
+            const int n = count.load(std::memory_order_acquire);
+            for (int i = 0; i < n; ++i)
+                if (entries[i].target == target)
+                    return entries[i].original;
+            return nullptr;
+        }
+
+        bool empty() const { return count.load(std::memory_order_acquire) == 0; }
+    };
+
+    // Device-context functions. An immediate context and a deferred one are different
+    // implementations, so a game that records its draws on deferred contexts (on worker threads)
+    // binds every texture through functions the immediate context's hooks never see.
+    typedef void(STDMETHODCALLTYPE *SetSrvFn)(ID3D11DeviceContext *, UINT, UINT, ID3D11ShaderResourceView *const *);
+    typedef HRESULT(STDMETHODCALLTYPE *MapFn)(ID3D11DeviceContext *, ID3D11Resource *, UINT, D3D11_MAP, UINT, D3D11_MAPPED_SUBRESOURCE *);
+    typedef void(STDMETHODCALLTYPE *UnmapFn)(ID3D11DeviceContext *, ID3D11Resource *, UINT);
+    typedef void(STDMETHODCALLTYPE *CopyResourceFn)(ID3D11DeviceContext *, ID3D11Resource *, ID3D11Resource *);
+    typedef void(STDMETHODCALLTYPE *CopyRegionFn)(ID3D11DeviceContext *, ID3D11Resource *, UINT, UINT, UINT, UINT, ID3D11Resource *, UINT, const D3D11_BOX *);
+    typedef void(STDMETHODCALLTYPE *UpdateSubresourceFn)(ID3D11DeviceContext *, ID3D11Resource *, UINT, const D3D11_BOX *, const void *, UINT, UINT);
+
+    static SlotHooks<SetSrvFn> s_ps_srv_hooks;
+    static SlotHooks<SetSrvFn> s_vs_srv_hooks;
+    static SlotHooks<SetSrvFn> s_cs_srv_hooks;
+    static SlotHooks<MapFn> s_map_hooks;
+    static SlotHooks<UnmapFn> s_unmap_hooks;
+    static SlotHooks<CopyRegionFn> s_copy_region_hooks;
+    static SlotHooks<CopyResourceFn> s_copy_resource_hooks;
+    static SlotHooks<UpdateSubresourceFn> s_update_subresource_hooks;
+
+    // ID3D11DeviceContext1's versions of the same two, with a flags argument on the end. A game
+    // built against D3D11.1 can upload through these and never touch the originals.
+    typedef void(STDMETHODCALLTYPE *CopyRegion1Fn)(ID3D11DeviceContext *, ID3D11Resource *, UINT, UINT, UINT, UINT, ID3D11Resource *, UINT, const D3D11_BOX *, UINT);
+    typedef void(STDMETHODCALLTYPE *UpdateSubresource1Fn)(ID3D11DeviceContext *, ID3D11Resource *, UINT, const D3D11_BOX *, const void *, UINT, UINT, UINT);
+    static SlotHooks<CopyRegion1Fn> s_copy_region1_hooks;
+    static SlotHooks<UpdateSubresource1Fn> s_update_subresource1_hooks;
+    constexpr int kSlotCopySubresourceRegion1 = 115;
+    constexpr int kSlotUpdateSubresource1 = 116;
+
+    // Verbose diagnostics: how the game moves pixels into the textures it draws. Reported from
+    // Present a few times, then left alone.
+    struct CopyDiag
+    {
+        std::atomic<uint64_t> copy_resource{0}, copy_region{0}, copy_region_whole{0}, copy_region1{0};
+        std::atomic<uint64_t> tag_carried{0}, update{0}, update_texture{0}, update1{0};
+    };
+    static CopyDiag s_copy_diag;
+
+    // ID3D11DeviceContext vtable slots.
+    constexpr int kSlotPSSetShaderResources = 8;
+    constexpr int kSlotMap = 14;
+    constexpr int kSlotUnmap = 15;
+    constexpr int kSlotVSSetShaderResources = 25;
+    constexpr int kSlotCopySubresourceRegion = 46;
+    constexpr int kSlotCopyResource = 47;
+    constexpr int kSlotUpdateSubresource = 48;
+    constexpr int kSlotCSSetShaderResources = 67;
+
+    static SlotHooks<PresentFn> s_present_hooks;
+    static SlotHooks<Present1Fn> s_present1_hooks;
+    static SlotHooks<CreateSwapChainFn> s_create_swapchain_hooks;
+    static SlotHooks<CreateSwapChainForHwndFn> s_create_for_hwnd_hooks;
+
+    static void *vtable_slot(void *object, int index)
+    {
+        return (*reinterpret_cast<void ***>(object))[index];
+    }
+
+    // Present and Present1 can be layered inside the runtime, one calling the other. The overlay is
+    // drawn once per frame, by whichever the game called, and nested calls only forward.
+    static thread_local int t_present_depth = 0;
+
     void D3D11Hook::bootstrap_dxgi_present()
     {
         // Gate: only fall back to a dummy device when the game is actually a D3D11 title whose
@@ -175,11 +304,11 @@ namespace TextureToolkit
         // device creation, which matters both for pure-D3D9 games (Bully, GTA IV never touch
         // D3D11, so no device is ever made here) and for multi-overlay stacks (ReShade, Special K,
         // Lossless Scaling) where an unnecessary startup device/swapchain risks ordering conflicts.
-        //   - m_orig_present set        -> the game's own swapchain got hooked; nothing to do.
+        //   - a Present hook exists     -> the game's own swapchain got hooked; nothing to do.
         //   - m_orig_create_texture2d   -> set by hook_device, i.e. the game created a D3D11 device.
         for (int i = 0; i < 600; ++i) // ~60s budget for the game to start rendering
         {
-            if (m_orig_present != nullptr)
+            if (!s_present_hooks.empty())
                 return; // a real swapchain got hooked the normal way; no dummy needed
             if (m_orig_create_texture2d != nullptr)
             {
@@ -191,7 +320,7 @@ namespace TextureToolkit
 
         // Bail unless this is a D3D11 game still lacking a Present hook. A D3D9-only game never
         // sets m_orig_create_texture2d, so it leaves here without ever creating a device.
-        if (m_orig_present != nullptr || m_orig_create_texture2d == nullptr)
+        if (!s_present_hooks.empty() || m_orig_create_texture2d == nullptr)
             return;
 
         Logger::get().info("[D3D11Hook] No swapchain Present hooked yet; falling back to a bootstrap swapchain.");
@@ -243,46 +372,69 @@ namespace TextureToolkit
 
     void D3D11Hook::hook_swapchain(IDXGISwapChain *swapchain)
     {
-        if (swapchain == nullptr || m_orig_present != nullptr)
+        if (swapchain == nullptr)
             return;
 
-        void **sc_vtable = *reinterpret_cast<void ***>(swapchain);
-        void *present_addr = sc_vtable[8]; // IDXGISwapChain::Present is index 8
+        // IDXGISwapChain::Present is index 8. Hooked for every implementation seen, not just the
+        // first swapchain's: see SlotHooks.
+        void *present = vtable_slot(swapchain, 8);
+        if (s_present_hooks.add(present, reinterpret_cast<void *>(&Hooked_Present)))
+            Logger::get().info("[D3D11Hook] REAL GAME SWAPCHAIN INTERCEPTED! Present hook active (" + ptr_hex(present) + ").");
 
-        HookManager::get().create_hook(present_addr, &Hooked_Present, reinterpret_cast<void **>(&m_orig_present));
-        Logger::get().info("[D3D11Hook] REAL GAME SWAPCHAIN INTERCEPTED! Present hook active.");
+        // IDXGISwapChain1::Present1 is index 22. A DXGI 1.2 game can present with it and never call
+        // Present at all, which leaves a Present-only hook waiting forever.
+        IDXGISwapChain1 *swapchain1 = nullptr;
+        if (SUCCEEDED(swapchain->QueryInterface(__uuidof(IDXGISwapChain1), reinterpret_cast<void **>(&swapchain1))) && swapchain1 != nullptr)
+        {
+            void *present1 = vtable_slot(swapchain1, 22);
+            if (s_present1_hooks.add(present1, reinterpret_cast<void *>(&Hooked_Present1)))
+                Logger::get().info("[D3D11Hook] Present1 hook active (" + ptr_hex(present1) + ").");
+            swapchain1->Release();
+        }
     }
 
-    void D3D11Hook::hook_context(ID3D11DeviceContext *context)
+    void D3D11Hook::hook_context(ID3D11DeviceContext *context, const char *kind)
     {
-        if (context == nullptr || m_orig_ps_set_shader_resources != nullptr)
+        if (context == nullptr)
             return;
 
-        void **ctx_vtable = *reinterpret_cast<void ***>(context);
+        // Every implementation, not only the first context seen: see the context tables above.
+        // PSSetShaderResources answers whether this implementation is new; the rest follow it.
+        const bool fresh = s_ps_srv_hooks.add(vtable_slot(context, kSlotPSSetShaderResources),
+                                              reinterpret_cast<void *>(&Hooked_PSSetShaderResources));
+        s_vs_srv_hooks.add(vtable_slot(context, kSlotVSSetShaderResources), reinterpret_cast<void *>(&Hooked_VSSetShaderResources));
+        s_cs_srv_hooks.add(vtable_slot(context, kSlotCSSetShaderResources), reinterpret_cast<void *>(&Hooked_CSSetShaderResources));
+        s_map_hooks.add(vtable_slot(context, kSlotMap), reinterpret_cast<void *>(&Hooked_Map));
+        s_unmap_hooks.add(vtable_slot(context, kSlotUnmap), reinterpret_cast<void *>(&Hooked_Unmap));
+        s_copy_region_hooks.add(vtable_slot(context, kSlotCopySubresourceRegion), reinterpret_cast<void *>(&Hooked_CopySubresourceRegion));
+        s_copy_resource_hooks.add(vtable_slot(context, kSlotCopyResource), reinterpret_cast<void *>(&Hooked_CopyResource));
+        s_update_subresource_hooks.add(vtable_slot(context, kSlotUpdateSubresource), reinterpret_cast<void *>(&Hooked_UpdateSubresource));
 
-        void *ps_set_srv_addr = ctx_vtable[8]; // PSSetShaderResources is index 8
-        void *map_addr = ctx_vtable[14]; // Map is index 14
-        void *unmap_addr = ctx_vtable[15]; // Unmap is index 15
+        ID3D11DeviceContext1 *context1 = nullptr;
+        if (SUCCEEDED(context->QueryInterface(__uuidof(ID3D11DeviceContext1), reinterpret_cast<void **>(&context1))) && context1 != nullptr)
+        {
+            s_copy_region1_hooks.add(vtable_slot(context1, kSlotCopySubresourceRegion1), reinterpret_cast<void *>(&Hooked_CopySubresourceRegion1));
+            s_update_subresource1_hooks.add(vtable_slot(context1, kSlotUpdateSubresource1), reinterpret_cast<void *>(&Hooked_UpdateSubresource1));
+            context1->Release();
+        }
 
-        HookManager::get().create_hook(ps_set_srv_addr, &Hooked_PSSetShaderResources, reinterpret_cast<void **>(&m_orig_ps_set_shader_resources));
-        HookManager::get().create_hook(ctx_vtable[25], &Hooked_VSSetShaderResources, reinterpret_cast<void **>(&m_orig_vs_set_shader_resources)); // VSSetShaderResources
-        HookManager::get().create_hook(ctx_vtable[67], &Hooked_CSSetShaderResources, reinterpret_cast<void **>(&m_orig_cs_set_shader_resources)); // CSSetShaderResources
-        HookManager::get().create_hook(map_addr, &Hooked_Map, reinterpret_cast<void **>(&m_orig_map));
-        HookManager::get().create_hook(unmap_addr, &Hooked_Unmap, reinterpret_cast<void **>(&m_orig_unmap));
-
-        Logger::get().info("[D3D11Hook] REAL GAME DEVICE CONTEXT INTERCEPTED! Pixel, vertex and compute shader binding, Map and Unmap hooks active.");
+        if (fresh)
+            Logger::get().info(std::string("[D3D11Hook] REAL GAME DEVICE CONTEXT INTERCEPTED (") + kind + ", " +
+                               ptr_hex(vtable_slot(context, kSlotPSSetShaderResources)) +
+                               ")! Shader resource binding, Map, Unmap, copy and UpdateSubresource hooks active.");
     }
 
     void D3D11Hook::hook_dxgi_factory(IDXGIFactory *factory)
     {
-        if (factory == nullptr || m_orig_create_swapchain != nullptr)
+        if (factory == nullptr)
             return;
 
-        void **factory_vtable = *reinterpret_cast<void ***>(factory);
-        void *create_swapchain_addr = factory_vtable[10]; // IDXGIFactory::CreateSwapChain is index 10
-
-        HookManager::get().create_hook(create_swapchain_addr, &Hooked_CreateSwapChain, reinterpret_cast<void **>(&m_orig_create_swapchain));
-        Logger::get().info("[D3D11Hook] Intercepted IDXGIFactory::CreateSwapChain (VTable index 10).");
+        // IDXGIFactory::CreateSwapChain is index 10. Every factory implementation is hooked: a game
+        // can make a second factory through another entry point (CreateDXGIFactory2, say) whose
+        // swapchains would otherwise never be seen.
+        void *create_swapchain_addr = vtable_slot(factory, 10);
+        if (s_create_swapchain_hooks.add(create_swapchain_addr, reinterpret_cast<void *>(&Hooked_CreateSwapChain)))
+            Logger::get().info("[D3D11Hook] Intercepted IDXGIFactory::CreateSwapChain (VTable index 10, " + ptr_hex(create_swapchain_addr) + ").");
 
         // Flip-model games (DXGI 1.2+, e.g. Deus Ex: Mankind Divided) create their swapchain
         // through IDXGIFactory2::CreateSwapChainForHwnd and never touch CreateSwapChain, so we
@@ -290,11 +442,9 @@ namespace TextureToolkit
         IDXGIFactory2 *factory2 = nullptr;
         if (SUCCEEDED(factory->QueryInterface(__uuidof(IDXGIFactory2), reinterpret_cast<void **>(&factory2))) && factory2 != nullptr)
         {
-            void **factory2_vtable = *reinterpret_cast<void ***>(factory2);
-            void *create_for_hwnd_addr = factory2_vtable[15]; // IDXGIFactory2::CreateSwapChainForHwnd is index 15
-
-            HookManager::get().create_hook(create_for_hwnd_addr, &Hooked_CreateSwapChainForHwnd, reinterpret_cast<void **>(&m_orig_create_swapchain_for_hwnd));
-            Logger::get().info("[D3D11Hook] Intercepted IDXGIFactory2::CreateSwapChainForHwnd (VTable index 15).");
+            void *create_for_hwnd_addr = vtable_slot(factory2, 15); // IDXGIFactory2::CreateSwapChainForHwnd
+            if (s_create_for_hwnd_hooks.add(create_for_hwnd_addr, reinterpret_cast<void *>(&Hooked_CreateSwapChainForHwnd)))
+                Logger::get().info("[D3D11Hook] Intercepted IDXGIFactory2::CreateSwapChainForHwnd (VTable index 15, " + ptr_hex(create_for_hwnd_addr) + ").");
             factory2->Release();
         }
     }
@@ -325,14 +475,38 @@ namespace TextureToolkit
 
     void D3D11Hook::hook_device(ID3D11Device *device)
     {
-        if (device == nullptr || m_orig_create_texture2d != nullptr)
+        if (device == nullptr)
             return;
 
-        void **device_vtable = *reinterpret_cast<void ***>(device);
-        void *create_tex2d_addr = device_vtable[5]; // ID3D11Device::CreateTexture2D is index 5
+        if (m_orig_create_texture2d == nullptr)
+        {
+            void **device_vtable = *reinterpret_cast<void ***>(device);
+            void *create_tex2d_addr = device_vtable[5]; // ID3D11Device::CreateTexture2D is index 5
 
-        HookManager::get().create_hook(create_tex2d_addr, &Hooked_CreateTexture2D, reinterpret_cast<void **>(&m_orig_create_texture2d));
-        Logger::get().info("[D3D11Hook] REAL GAME DEVICE INTERCEPTED! CreateTexture2D hook active.");
+            HookManager::get().create_hook(create_tex2d_addr, &Hooked_CreateTexture2D, reinterpret_cast<void **>(&m_orig_create_texture2d));
+            Logger::get().info("[D3D11Hook] REAL GAME DEVICE INTERCEPTED! CreateTexture2D hook active.");
+        }
+
+        // The immediate context, for a game that never asked for it at creation time.
+        ID3D11DeviceContext *immediate = nullptr;
+        device->GetImmediateContext(&immediate);
+        if (immediate != nullptr)
+        {
+            hook_context(immediate, "immediate");
+            immediate->Release();
+        }
+
+        // The deferred implementation. The Sims 4 records its draws on deferred contexts and bound
+        // not one texture through the immediate context's hooks in 45 seconds of play, so the scene
+        // list stayed empty with 200 textures tracked. Rather than hook every CreateDeferredContext
+        // variant (1, 2 and 3 exist), make one here, hook the functions it shares with every other
+        // deferred context, and let it go. A single-threaded device refuses, and then has none.
+        ID3D11DeviceContext *deferred = nullptr;
+        if (SUCCEEDED(device->CreateDeferredContext(0, &deferred)) && deferred != nullptr)
+        {
+            hook_context(deferred, "deferred");
+            deferred->Release();
+        }
     }
 
     HRESULT STDMETHODCALLTYPE D3D11Hook::Hooked_CreateTexture2D(ID3D11Device *device, const D3D11_TEXTURE2D_DESC *pDesc, const D3D11_SUBRESOURCE_DATA *pInitialData, ID3D11Texture2D **ppTexture2D)
@@ -602,7 +776,7 @@ namespace TextureToolkit
             }
             if (ppImmediateContext != nullptr && *ppImmediateContext != nullptr)
             {
-                get().hook_context(*ppImmediateContext);
+                get().hook_context(*ppImmediateContext, "immediate");
             }
             if (ppDevice != nullptr && *ppDevice != nullptr)
             {
@@ -631,7 +805,7 @@ namespace TextureToolkit
         {
             if (ppImmediateContext != nullptr && *ppImmediateContext != nullptr)
             {
-                get().hook_context(*ppImmediateContext);
+                get().hook_context(*ppImmediateContext, "immediate");
             }
             if (ppDevice != nullptr && *ppDevice != nullptr)
             {
@@ -697,7 +871,10 @@ namespace TextureToolkit
     HRESULT STDMETHODCALLTYPE D3D11Hook::Hooked_CreateSwapChain(IDXGIFactory *factory, IUnknown *pDevice, DXGI_SWAP_CHAIN_DESC *pDesc, IDXGISwapChain **ppSwapChain)
     {
         Logger::get().info("[D3D11Hook] IDXGIFactory::CreateSwapChain was called by the game!");
-        HRESULT hr = get().m_orig_create_swapchain(factory, pDevice, pDesc, ppSwapChain);
+        const CreateSwapChainFn original = s_create_swapchain_hooks.find(vtable_slot(factory, 10));
+        if (original == nullptr)
+            return DXGI_ERROR_INVALID_CALL; // hooked but unpublished: cannot happen, and must not guess
+        HRESULT hr = original(factory, pDevice, pDesc, ppSwapChain);
 
         if (SUCCEEDED(hr) && ppSwapChain != nullptr && *ppSwapChain != nullptr)
         {
@@ -709,7 +886,10 @@ namespace TextureToolkit
     HRESULT STDMETHODCALLTYPE D3D11Hook::Hooked_CreateSwapChainForHwnd(IDXGIFactory2 *factory, IUnknown *pDevice, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1 *pDesc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *pFullscreenDesc, IDXGIOutput *pRestrictToOutput, IDXGISwapChain1 **ppSwapChain)
     {
         Logger::get().info("[D3D11Hook] IDXGIFactory2::CreateSwapChainForHwnd was called by the game!");
-        HRESULT hr = get().m_orig_create_swapchain_for_hwnd(factory, pDevice, hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain);
+        const CreateSwapChainForHwndFn original = s_create_for_hwnd_hooks.find(vtable_slot(factory, 15));
+        if (original == nullptr)
+            return DXGI_ERROR_INVALID_CALL;
+        HRESULT hr = original(factory, pDevice, hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain);
 
         if (SUCCEEDED(hr) && ppSwapChain != nullptr && *ppSwapChain != nullptr)
         {
@@ -718,7 +898,7 @@ namespace TextureToolkit
         return hr;
     }
 
-    HRESULT STDMETHODCALLTYPE D3D11Hook::Hooked_Present(IDXGISwapChain *swapchain, UINT SyncInterval, UINT Flags)
+    void D3D11Hook::present_overlay(IDXGISwapChain *swapchain)
     {
         // Note which swapchain is presenting, but do NOT skip rendering for it: a game can present
         // more than one, and drawing into every one that presents is what makes the overlay land on
@@ -734,14 +914,58 @@ namespace TextureToolkit
             }
         }
 
-        s_present_count.fetch_add(1, std::memory_order_relaxed);
+        const uint64_t presents = s_present_count.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (HookTimings::enabled() && presents % 1200 == 0 && presents <= 1200 * 6)
+        {
+            const CopyDiag &c = s_copy_diag;
+            Logger::get().debug("[Diag] Copies so far: CopyResource " + std::to_string(c.copy_resource.load()) +
+                                ", CopySubresourceRegion " + std::to_string(c.copy_region.load()) + " (whole top level " +
+                                std::to_string(c.copy_region_whole.load()) + "), CopySubresourceRegion1 " +
+                                std::to_string(c.copy_region1.load()) + ", from a tagged texture " + std::to_string(c.tag_carried.load()) +
+                                ". UpdateSubresource " + std::to_string(c.update.load()) + " (texture top level " +
+                                std::to_string(c.update_texture.load()) + "), UpdateSubresource1 " + std::to_string(c.update1.load()) + ".");
+        }
         get().m_swapchain = swapchain;
         HookTimings::frame();
         {
             HookTimings::Scope timing(HookTimings::Site::Overlay);
             get().render_imgui(swapchain);
         }
-        return get().m_orig_present(swapchain, SyncInterval, Flags);
+    }
+
+    HRESULT STDMETHODCALLTYPE D3D11Hook::Hooked_Present(IDXGISwapChain *swapchain, UINT SyncInterval, UINT Flags)
+    {
+        const PresentFn original = s_present_hooks.find(vtable_slot(swapchain, 8));
+        if (original == nullptr)
+            return DXGI_ERROR_INVALID_CALL; // hooked but unpublished: cannot happen, and must not guess
+
+        static std::atomic<bool> s_said{false};
+        if (!s_said.exchange(true))
+            Logger::get().info("[D3D11Hook] The game presents with IDXGISwapChain::Present.");
+
+        if (++t_present_depth == 1)
+            get().present_overlay(swapchain);
+        const HRESULT hr = original(swapchain, SyncInterval, Flags);
+        --t_present_depth;
+        return hr;
+    }
+
+    HRESULT STDMETHODCALLTYPE D3D11Hook::Hooked_Present1(IDXGISwapChain1 *swapchain, UINT SyncInterval, UINT Flags,
+                                                         const DXGI_PRESENT_PARAMETERS *pPresentParameters)
+    {
+        const Present1Fn original = s_present1_hooks.find(vtable_slot(swapchain, 22));
+        if (original == nullptr)
+            return DXGI_ERROR_INVALID_CALL;
+
+        static std::atomic<bool> s_said{false};
+        if (!s_said.exchange(true))
+            Logger::get().info("[D3D11Hook] The game presents with IDXGISwapChain1::Present1.");
+
+        if (++t_present_depth == 1)
+            get().present_overlay(swapchain);
+        const HRESULT hr = original(swapchain, SyncInterval, Flags, pPresentParameters);
+        --t_present_depth;
+        return hr;
     }
 
     void D3D11Hook::bind_shader_resources(SetShaderResources_t original, ID3D11DeviceContext *context, UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews)
@@ -782,7 +1006,7 @@ namespace TextureToolkit
 
     void STDMETHODCALLTYPE D3D11Hook::Hooked_PSSetShaderResources(ID3D11DeviceContext *context, UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews)
     {
-        bind_shader_resources(get().m_orig_ps_set_shader_resources, context, StartSlot, NumViews, ppShaderResourceViews);
+        bind_shader_resources(s_ps_srv_hooks.find(vtable_slot(context, kSlotPSSetShaderResources)), context, StartSlot, NumViews, ppShaderResourceViews);
     }
 
     // A texture sampled by a vertex or compute shader never reached the pixel stage, so it was
@@ -790,17 +1014,146 @@ namespace TextureToolkit
     // a heightmap, and anything a compute pass reads, land here.
     void STDMETHODCALLTYPE D3D11Hook::Hooked_VSSetShaderResources(ID3D11DeviceContext *context, UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews)
     {
-        bind_shader_resources(get().m_orig_vs_set_shader_resources, context, StartSlot, NumViews, ppShaderResourceViews);
+        bind_shader_resources(s_vs_srv_hooks.find(vtable_slot(context, kSlotVSSetShaderResources)), context, StartSlot, NumViews, ppShaderResourceViews);
     }
 
     void STDMETHODCALLTYPE D3D11Hook::Hooked_CSSetShaderResources(ID3D11DeviceContext *context, UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews)
     {
-        bind_shader_resources(get().m_orig_cs_set_shader_resources, context, StartSlot, NumViews, ppShaderResourceViews);
+        bind_shader_resources(s_cs_srv_hooks.find(vtable_slot(context, kSlotCSSetShaderResources)), context, StartSlot, NumViews, ppShaderResourceViews);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Copies carry the content tag from source to destination
+    //
+    // The Sims 4 creates each texture twice: the one it draws (a default-usage shader resource) and
+    // a staging one it fills through Map/Unmap, then copies across. Only the staging texture passed
+    // through a hook we watched, so it was the one hashed and tagged, and staging textures can never
+    // be bound: 211 tracked textures and not one of them in the scene. The tag now follows the copy.
+    // Only a whole top-level copy carries it, since the top mip is what identifies a texture and a
+    // partial copy is different content.
+    // ---------------------------------------------------------------------------------------
+    void STDMETHODCALLTYPE D3D11Hook::Hooked_CopyResource(ID3D11DeviceContext *context, ID3D11Resource *pDstResource, ID3D11Resource *pSrcResource)
+    {
+        if (const CopyResourceFn original = s_copy_resource_hooks.find(vtable_slot(context, kSlotCopyResource)))
+            original(context, pDstResource, pSrcResource);
+        else
+            return;
+        s_copy_diag.copy_resource.fetch_add(1, std::memory_order_relaxed);
+        if (!s_inside_injection && TextureManager::get().copy_tag11(pSrcResource, pDstResource))
+            s_copy_diag.tag_carried.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    void STDMETHODCALLTYPE D3D11Hook::Hooked_CopySubresourceRegion(ID3D11DeviceContext *context, ID3D11Resource *pDstResource, UINT DstSubresource,
+                                                                   UINT DstX, UINT DstY, UINT DstZ, ID3D11Resource *pSrcResource,
+                                                                   UINT SrcSubresource, const D3D11_BOX *pSrcBox)
+    {
+        if (const CopyRegionFn original = s_copy_region_hooks.find(vtable_slot(context, kSlotCopySubresourceRegion)))
+            original(context, pDstResource, DstSubresource, DstX, DstY, DstZ, pSrcResource, SrcSubresource, pSrcBox);
+        else
+            return;
+        s_copy_diag.copy_region.fetch_add(1, std::memory_order_relaxed);
+        carry_region_tag(pDstResource, DstSubresource, DstX, DstY, DstZ, pSrcResource, SrcSubresource, pSrcBox);
+    }
+
+    void STDMETHODCALLTYPE D3D11Hook::Hooked_CopySubresourceRegion1(ID3D11DeviceContext *context, ID3D11Resource *pDstResource, UINT DstSubresource,
+                                                                    UINT DstX, UINT DstY, UINT DstZ, ID3D11Resource *pSrcResource,
+                                                                    UINT SrcSubresource, const D3D11_BOX *pSrcBox, UINT CopyFlags)
+    {
+        if (const CopyRegion1Fn original = s_copy_region1_hooks.find(vtable_slot(context, kSlotCopySubresourceRegion1)))
+            original(context, pDstResource, DstSubresource, DstX, DstY, DstZ, pSrcResource, SrcSubresource, pSrcBox, CopyFlags);
+        else
+            return;
+        s_copy_diag.copy_region1.fetch_add(1, std::memory_order_relaxed);
+        carry_region_tag(pDstResource, DstSubresource, DstX, DstY, DstZ, pSrcResource, SrcSubresource, pSrcBox);
+    }
+
+    void D3D11Hook::carry_region_tag(ID3D11Resource *pDstResource, UINT DstSubresource, UINT DstX, UINT DstY, UINT DstZ,
+                                     ID3D11Resource *pSrcResource, UINT SrcSubresource, const D3D11_BOX *pSrcBox)
+    {
+        if (s_inside_injection || DstSubresource != 0 || SrcSubresource != 0 || DstX != 0 || DstY != 0 || DstZ != 0)
+            return;
+
+        // A box is still a whole copy when it covers all of the source's top level.
+        if (pSrcBox != nullptr)
+        {
+            ID3D11Texture2D *src_tex = nullptr;
+            if (pSrcResource == nullptr ||
+                FAILED(pSrcResource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void **>(&src_tex))) || src_tex == nullptr)
+                return;
+            D3D11_TEXTURE2D_DESC d = {};
+            src_tex->GetDesc(&d);
+            src_tex->Release();
+            if (pSrcBox->left != 0 || pSrcBox->top != 0 || pSrcBox->right != d.Width || pSrcBox->bottom != d.Height)
+                return;
+        }
+
+        s_copy_diag.copy_region_whole.fetch_add(1, std::memory_order_relaxed);
+        if (TextureManager::get().copy_tag11(pSrcResource, pDstResource))
+            s_copy_diag.tag_carried.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    // Pixels written straight into a texture, with no staging copy in between. Registered exactly
+    // as an Unmap would be: same hash, same tracking.
+    void STDMETHODCALLTYPE D3D11Hook::Hooked_UpdateSubresource(ID3D11DeviceContext *context, ID3D11Resource *pDstResource, UINT DstSubresource,
+                                                               const D3D11_BOX *pDstBox, const void *pSrcData, UINT SrcRowPitch,
+                                                               UINT SrcDepthPitch)
+    {
+        if (const UpdateSubresourceFn original = s_update_subresource_hooks.find(vtable_slot(context, kSlotUpdateSubresource)))
+            original(context, pDstResource, DstSubresource, pDstBox, pSrcData, SrcRowPitch, SrcDepthPitch);
+        else
+            return;
+        s_copy_diag.update.fetch_add(1, std::memory_order_relaxed);
+        register_update(context, pDstResource, DstSubresource, pDstBox, pSrcData, SrcRowPitch);
+    }
+
+    void STDMETHODCALLTYPE D3D11Hook::Hooked_UpdateSubresource1(ID3D11DeviceContext *context, ID3D11Resource *pDstResource, UINT DstSubresource,
+                                                                const D3D11_BOX *pDstBox, const void *pSrcData, UINT SrcRowPitch,
+                                                                UINT SrcDepthPitch, UINT CopyFlags)
+    {
+        if (const UpdateSubresource1Fn original = s_update_subresource1_hooks.find(vtable_slot(context, kSlotUpdateSubresource1)))
+            original(context, pDstResource, DstSubresource, pDstBox, pSrcData, SrcRowPitch, SrcDepthPitch, CopyFlags);
+        else
+            return;
+        s_copy_diag.update1.fetch_add(1, std::memory_order_relaxed);
+        register_update(context, pDstResource, DstSubresource, pDstBox, pSrcData, SrcRowPitch);
+    }
+
+    void D3D11Hook::register_update(ID3D11DeviceContext *context, ID3D11Resource *pDstResource, UINT DstSubresource,
+                                    const D3D11_BOX *pDstBox, const void *pSrcData, UINT SrcRowPitch)
+    {
+        if (s_inside_injection || DstSubresource != 0 || pDstBox != nullptr || pSrcData == nullptr || pDstResource == nullptr)
+            return;
+
+        // Buffers (constant buffers above all) arrive here far more often than textures do.
+        D3D11_RESOURCE_DIMENSION dim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+        pDstResource->GetType(&dim);
+        if (dim != D3D11_RESOURCE_DIMENSION_TEXTURE2D)
+            return;
+
+        ID3D11Texture2D *tex = nullptr;
+        if (FAILED(pDstResource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void **>(&tex))) || tex == nullptr)
+            return;
+        D3D11_TEXTURE2D_DESC d = {};
+        tex->GetDesc(&d);
+        tex->Release();
+        if ((d.BindFlags & D3D11_BIND_SHADER_RESOURCE) == 0)
+            return;
+        s_copy_diag.update_texture.fetch_add(1, std::memory_order_relaxed);
+
+        ID3D11Device *device = nullptr;
+        context->GetDevice(&device);
+        if (device == nullptr)
+            return;
+        TextureManager::get().register_unmap_texture11(device, pDstResource, pSrcData, d.Width, d.Height, d.Format, SrcRowPitch);
+        device->Release();
     }
 
     HRESULT STDMETHODCALLTYPE D3D11Hook::Hooked_Map(ID3D11DeviceContext *context, ID3D11Resource *pResource, UINT Subresource, D3D11_MAP MapType, UINT MapFlags, D3D11_MAPPED_SUBRESOURCE *pMappedResource)
     {
-        HRESULT hr = get().m_orig_map(context, pResource, Subresource, MapType, MapFlags, pMappedResource);
+        const MapFn original = s_map_hooks.find(vtable_slot(context, kSlotMap));
+        if (original == nullptr)
+            return E_FAIL; // hooked but unpublished: cannot happen, and must not guess
+        HRESULT hr = original(context, pResource, Subresource, MapType, MapFlags, pMappedResource);
 
         // Skip our own staging Map during a dump/injection readback (see dump_resource11).
         if (SUCCEEDED(hr) && !s_inside_injection && Subresource == 0 && pMappedResource != nullptr && pMappedResource->pData != nullptr)
@@ -901,7 +1254,8 @@ namespace TextureToolkit
             }
         }
 
-        get().m_orig_unmap(context, pResource, Subresource);
+        if (const UnmapFn original = s_unmap_hooks.find(vtable_slot(context, kSlotUnmap)))
+            original(context, pResource, Subresource);
 
         // Dropped after the real Unmap so the resource is guaranteed alive across it.
         if (held != nullptr)

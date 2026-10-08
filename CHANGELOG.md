@@ -51,6 +51,10 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
   the original of the object it was made on.
 - The startup watchdog blamed OpenGL for a Direct3D 11 game that had created a device but not yet
   presented a frame through the hook. It now says that a device exists and names the likely causes.
+### Changed
+- **"Skip small textures" now also hides 16x16 ones from the list.** Spec Ops: The Line has
+  hundreds of 16x16 placeholders that the old cut-off (under 16x16) let through. They are only
+  hidden: 16x16 textures are still tracked, and mods that replace one keep working.
 
 ## [1.2.1] - 2026-10-05
 

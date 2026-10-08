@@ -2547,9 +2547,11 @@ namespace TextureToolkit
                 pair.second.status = (m_failed_injections.find(pair.first) != m_failed_injections.end())
                     ? TextureStatus::FAILED : TextureStatus::PENDING;
 
-            // Tracking already skips them while the switch is on; this also drops the ones
-            // tracked before it was switched on.
-            if (filter_small_textures && (pair.second.width < 16 || pair.second.height < 16))
+            // Tracking already skips those under 16 while the switch is on; this also drops the
+            // ones tracked before it was switched on. 16 x 16 itself is only hidden from the list,
+            // never untracked, so a mod that replaces one keeps working (Spec Ops: The Line has
+            // hundreds of 16 x 16 placeholders).
+            if (filter_small_textures && (pair.second.width <= 16 || pair.second.height <= 16))
                 continue;
 
             if (show_current_frame_only)

@@ -810,17 +810,17 @@ namespace TextureToolkit
             ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 4.0f);
             if (ToggleSwitch("##skip_small", &tm.filter_small_textures))
                 persist_settings(tm);
-            ImGui::SetItemTooltip("Ignore textures under 16 x 16: lookup tables and placeholders,\nrarely worth replacing, that crowd the list.\nSwitched off, tiny textures are listed as they next load.");
+            ImGui::SetItemTooltip("Hide textures of 16 x 16 and smaller: lookup tables and placeholders,\nrarely worth replacing, that crowd the list. Mods still replace 16 x 16 ones.\nSwitched off, tiny textures are listed as they next load.");
             ImGui::SameLine();
             ImGui::SetCursorPosY(ImGui::GetCursorPosY() - 4.0f);
             ImGui::AlignTextToFramePadding();
-            ImGui::TextUnformatted("Skip under 16 x 16");
+            ImGui::TextUnformatted("Skip 16 x 16 and smaller");
             if (ImGui::IsItemClicked())
             {
                 tm.filter_small_textures = !tm.filter_small_textures;
                 persist_settings(tm);
             }
-            ImGui::SetItemTooltip("Ignore textures under 16 x 16: lookup tables and placeholders,\nrarely worth replacing, that crowd the list.\nSwitched off, tiny textures are listed as they next load.");
+            ImGui::SetItemTooltip("Hide textures of 16 x 16 and smaller: lookup tables and placeholders,\nrarely worth replacing, that crowd the list. Mods still replace 16 x 16 ones.\nSwitched off, tiny textures are listed as they next load.");
 
             // A texture the game uploads but never draws with is tracked and then filtered
             // straight back out, which reads as "the tool cannot see it" when the truth is that
@@ -1512,7 +1512,7 @@ namespace TextureToolkit
                                              " applied, " + std::to_string(inj.failed) + " failed" });
         rows.push_back({ "Mods", std::to_string(mods) + " installed, " + std::to_string(mods_on) + " on" });
         rows.push_back({ "Texture list", std::string("current scene only ") + on(tm.show_current_frame_only) +
-                                             ", skip under 16 x 16 " + on(tm.filter_small_textures) +
+                                             ", skip 16 x 16 and smaller " + on(tm.filter_small_textures) +
                                              ", blink selected " + on(tm.highlight_selected) });
         rows.push_back({ "Auto-dump", on(tm.auto_dump) });
         rows.push_back({ "Verbose log", on(cfg.verbose) });

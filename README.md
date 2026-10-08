@@ -101,7 +101,8 @@ Verbose=0
 - `ResourceRoot`: folder holding `dump/`, `inject/`, and `imgui.ini`; relative to the game folder, or an absolute path.
 - `EnableInjection`: load replacements from the `inject/` folder.
 - `AutoDump`: dump every texture to the `dump/` folder as it loads.
-- `FilterSmallTextures`: ignore textures under 16x16.
+- `FilterSmallTextures`: hide textures of 16x16 and smaller from the list. Textures under 16x16
+  are not tracked at all; mods still replace 16x16 ones.
 - `ShowCurrentFrameOnly`: list only textures drawn in the current scene.
 - `HighlightSelected`: blink the texture selected in the panel magenta, in the game (the inspector's "Blink in game").
 - `AcceptSpecialKNames`: also load files named the way Special K names them. Where both namings exist for the same texture, the file from the source higher in the [load order](#texture-mods) is used; within one folder, our own naming wins.

@@ -2526,6 +2526,21 @@ namespace TextureToolkit
         return created;
     }
 
+    // Tracking already skips textures under 16 while the switch is on; this also drops the ones
+    // tracked before it was switched on. 16 x 16 itself is only hidden from the list, never
+    // untracked, so a mod that replaces one keeps working (Spec Ops: The Line has hundreds of
+    // 16 x 16 placeholders).
+    bool TextureManager::hidden_as_small(const TextureDetails &d) const
+    {
+        return filter_small_textures && (d.width <= 16 || d.height <= 16);
+    }
+
+    // Drawn within the last 60 frames.
+    bool TextureManager::seen_recently_locked(const TextureDetails &d) const
+    {
+        return d.last_seen_frame != 0 && !(m_frame_count > 0 && d.last_seen_frame + 60 < m_frame_count);
+    }
+
     std::vector<TextureDetails> TextureManager::get_active_textures(size_t *hidden_out)
     {
         std::lock_guard<std::mutex> lock(m_mutex);
@@ -2547,20 +2562,13 @@ namespace TextureToolkit
                 pair.second.status = (m_failed_injections.find(pair.first) != m_failed_injections.end())
                     ? TextureStatus::FAILED : TextureStatus::PENDING;
 
-            // Tracking already skips those under 16 while the switch is on; this also drops the
-            // ones tracked before it was switched on. 16 x 16 itself is only hidden from the list,
-            // never untracked, so a mod that replaces one keeps working (Spec Ops: The Line has
-            // hundreds of 16 x 16 placeholders).
-            if (filter_small_textures && (pair.second.width <= 16 || pair.second.height <= 16))
+            if (hidden_as_small(pair.second))
                 continue;
 
-            if (show_current_frame_only)
+            if (show_current_frame_only && !seen_recently_locked(pair.second))
             {
-                if (pair.second.last_seen_frame == 0 || (m_frame_count > 0 && pair.second.last_seen_frame + 60 < m_frame_count))
-                {
-                    ++hidden;
-                    continue;
-                }
+                ++hidden;
+                continue;
             }
             result.push_back(pair.second);
         }
@@ -2983,13 +2991,10 @@ namespace TextureToolkit
         size_t queued = 0;
         for (auto &pair : m_tracked_textures)
         {
-            if (scene_only)
-            {
-                const TextureDetails &d = pair.second;
-                bool active = d.last_seen_frame != 0 && !(m_frame_count > 0 && d.last_seen_frame + 60 < m_frame_count);
-                if (!active)
-                    continue;
-            }
+            // What the list shows, and nothing it hides: the panel reports the count as what was
+            // listed, and the small-texture switch exists to keep exactly those out.
+            if (hidden_as_small(pair.second) || (scene_only && !seen_recently_locked(pair.second)))
+                continue;
             m_pending_dumps.insert(pair.first);
             ++queued;
         }

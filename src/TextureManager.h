@@ -266,6 +266,11 @@ namespace TextureToolkit
         // Hashes seen this frame, buffered per thread so the bind hook does not take the manager
         // lock for every bound texture; merged under the lock on flush and in on_frame.
         void flush_seen_locked();
+
+        // The two list filters, shared by the texture list and Dump all so both always agree on
+        // what the panel shows. Caller MUST hold m_mutex (seen_recently_locked reads the frame).
+        bool hidden_as_small(const TextureDetails &d) const;
+        bool seen_recently_locked(const TextureDetails &d) const;
         uint64_t m_next_eviction_ticks = 0;
 
         // Active-scene tracking is keyed by content hash (immune to driver pointer reuse).

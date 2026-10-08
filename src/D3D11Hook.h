@@ -37,7 +37,6 @@ namespace TextureToolkit
 
         // See D3D9Hook::s_present_count.
         static std::atomic<uint64_t> s_present_count;
-        ID3D11DeviceContext *get_context() const { return m_context; }
 
         // Re-entrancy guard for injection
         static thread_local bool s_inside_injection;
@@ -57,13 +56,6 @@ namespace TextureToolkit
         typedef HRESULT(WINAPI *CreateDXGIFactory_t)(REFIID, void **);
         // DXGI 1.3. Modern games call this one, and it takes a Flags argument the others do not.
         typedef HRESULT(WINAPI *CreateDXGIFactory2_t)(UINT, REFIID, void **);
-
-        typedef HRESULT(STDMETHODCALLTYPE *CreateSwapChain_t)(IDXGIFactory *, IUnknown *, DXGI_SWAP_CHAIN_DESC *, IDXGISwapChain **);
-        typedef HRESULT(STDMETHODCALLTYPE *CreateSwapChainForHwnd_t)(IDXGIFactory2 *, IUnknown *, HWND, const DXGI_SWAP_CHAIN_DESC1 *, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *, IDXGIOutput *, IDXGISwapChain1 **);
-        typedef HRESULT(STDMETHODCALLTYPE *Present_t)(IDXGISwapChain *, UINT, UINT);
-        typedef void(STDMETHODCALLTYPE *PSSetShaderResources_t)(ID3D11DeviceContext *, UINT, UINT, ID3D11ShaderResourceView *const *);
-        typedef HRESULT(STDMETHODCALLTYPE *Map_t)(ID3D11DeviceContext *, ID3D11Resource *, UINT, D3D11_MAP, UINT, D3D11_MAPPED_SUBRESOURCE *);
-        typedef void(STDMETHODCALLTYPE *Unmap_t)(ID3D11DeviceContext *, ID3D11Resource *, UINT);
 
         static HRESULT WINAPI Hooked_D3D11CreateDeviceAndSwapChain(
             IDXGIAdapter *pAdapter, D3D_DRIVER_TYPE DriverType, HMODULE Software, UINT Flags,
@@ -94,12 +86,8 @@ namespace TextureToolkit
 
         // Copies and direct uploads. A game that fills a staging texture and copies it into the one
         // it draws hands its pixels over in CopyResource / CopySubresourceRegion; one that writes
-        // straight into a default texture does it with UpdateSubresource.
-        typedef void(STDMETHODCALLTYPE *CopyResource_t)(ID3D11DeviceContext *, ID3D11Resource *, ID3D11Resource *);
-        typedef void(STDMETHODCALLTYPE *CopySubresourceRegion_t)(ID3D11DeviceContext *, ID3D11Resource *, UINT, UINT, UINT, UINT,
-                                                                 ID3D11Resource *, UINT, const D3D11_BOX *);
-        typedef void(STDMETHODCALLTYPE *UpdateSubresource_t)(ID3D11DeviceContext *, ID3D11Resource *, UINT, const D3D11_BOX *,
-                                                             const void *, UINT, UINT);
+        // straight into a default texture does it with UpdateSubresource. The "1" variants are
+        // ID3D11DeviceContext1's versions of the same calls.
         static void STDMETHODCALLTYPE Hooked_CopySubresourceRegion1(ID3D11DeviceContext *context, ID3D11Resource *pDstResource, UINT DstSubresource,
                                                                     UINT DstX, UINT DstY, UINT DstZ, ID3D11Resource *pSrcResource,
                                                                     UINT SrcSubresource, const D3D11_BOX *pSrcBox, UINT CopyFlags);
@@ -145,7 +133,6 @@ namespace TextureToolkit
 
         typedef HRESULT(STDMETHODCALLTYPE *CreateTexture2D_t)(ID3D11Device *, const D3D11_TEXTURE2D_DESC *, const D3D11_SUBRESOURCE_DATA *, ID3D11Texture2D **);
         CreateTexture2D_t m_orig_create_texture2d = nullptr;
-
 
         static HRESULT STDMETHODCALLTYPE Hooked_CreateTexture2D(ID3D11Device *device, const D3D11_TEXTURE2D_DESC *pDesc, const D3D11_SUBRESOURCE_DATA *pInitialData, ID3D11Texture2D **ppTexture2D);
     };

@@ -67,13 +67,30 @@ namespace TextureToolkit
     struct MappedResourceData
     {
         ID3D11Resource *resource = nullptr;
-        UINT subresource = 0;
         D3D11_MAPPED_SUBRESOURCE mapped = {};
+    };
+
+    // Keyed on the context as well as the resource. Unmap always comes on the context that mapped,
+    // and two deferred contexts can each have the same dynamic texture mapped at once, with
+    // different memory: keyed on the resource alone, the second Map replaced the first and the
+    // first Unmap hashed the second's half-written pixels.
+    struct MapKey
+    {
+        ID3D11DeviceContext *context;
+        ID3D11Resource *resource;
+        bool operator==(const MapKey &o) const { return context == o.context && resource == o.resource; }
+    };
+    struct MapKeyHash
+    {
+        size_t operator()(const MapKey &k) const
+        {
+            return std::hash<void *>()(k.resource) ^ (std::hash<void *>()(k.context) * 31);
+        }
     };
 
     // Shared across threads rather than thread_local: a game may Map on one thread and Unmap on
     // another, and with a reference held per entry a per-thread map would leak that resource.
-    static std::unordered_map<ID3D11Resource *, MappedResourceData> s_mapped_resources;
+    static std::unordered_map<MapKey, MappedResourceData, MapKeyHash> s_mapped_resources;
     static std::mutex s_mapped_mutex;
     thread_local bool D3D11Hook::s_inside_injection = false;
     std::atomic<uint64_t> D3D11Hook::s_present_count{0};
@@ -515,10 +532,12 @@ namespace TextureToolkit
         if (s_inside_injection)
             return get().m_orig_create_texture2d(device, pDesc, pInitialData, ppTexture2D);
 
-        static int s_logged_creations = 0;
-        if (pDesc != nullptr && s_logged_creations < 50)
+        // Textures are created on worker threads too (The Sims 4 streams on several).
+        static std::atomic<int> s_logged_creations{0};
+        const int logged = (pDesc != nullptr && s_logged_creations.load(std::memory_order_relaxed) < 50)
+                               ? s_logged_creations.fetch_add(1, std::memory_order_relaxed) : 50;
+        if (logged < 50)
         {
-            s_logged_creations++;
             std::string has_init_data = (pInitialData != nullptr) ? "Yes" : "No";
             Logger::get().debug("[D3D11Hook] Hooked_CreateTexture2D: Width=" + std::to_string(pDesc->Width) + ", Height=" + std::to_string(pDesc->Height) + ", Format=" + std::to_string(static_cast<uint32_t>(pDesc->Format)) + ", InitialData=" + has_init_data + ", Usage=" + std::to_string(pDesc->Usage) + ", BindFlags=" + std::to_string(pDesc->BindFlags));
         }
@@ -534,7 +553,7 @@ namespace TextureToolkit
                 {
                     if (pDesc->BindFlags & D3D11_BIND_SHADER_RESOURCE)
                     {
-                        if (s_logged_creations < 50)
+                        if (logged < 50)
                         {
                             Logger::get().debug("[D3D11Hook] Hooked_CreateTexture2D: Registering texture!");
                         }
@@ -1067,25 +1086,44 @@ namespace TextureToolkit
         carry_region_tag(pDstResource, DstSubresource, DstX, DstY, DstZ, pSrcResource, SrcSubresource, pSrcBox);
     }
 
+    // Whether `box` (null meaning everything) covers the whole top level of a w x h texture. Block-
+    // compressed formats may round the far edges up to the next multiple of 4.
+    static bool box_covers_top_level(const D3D11_BOX *box, UINT w, UINT h)
+    {
+        if (box == nullptr)
+            return true;
+        return box->left == 0 && box->top == 0 && box->front == 0 && box->back == 1 &&
+               box->right >= w && box->right <= ((w + 3) & ~3u) &&
+               box->bottom >= h && box->bottom <= ((h + 3) & ~3u);
+    }
+
+    static bool texture2d_desc(ID3D11Resource *resource, D3D11_TEXTURE2D_DESC &desc)
+    {
+        if (resource == nullptr)
+            return false;
+        D3D11_RESOURCE_DIMENSION dim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+        resource->GetType(&dim);
+        if (dim != D3D11_RESOURCE_DIMENSION_TEXTURE2D)
+            return false;
+        static_cast<ID3D11Texture2D *>(resource)->GetDesc(&desc);
+        return true;
+    }
+
     void D3D11Hook::carry_region_tag(ID3D11Resource *pDstResource, UINT DstSubresource, UINT DstX, UINT DstY, UINT DstZ,
                                      ID3D11Resource *pSrcResource, UINT SrcSubresource, const D3D11_BOX *pSrcBox)
     {
         if (s_inside_injection || DstSubresource != 0 || SrcSubresource != 0 || DstX != 0 || DstY != 0 || DstZ != 0)
             return;
 
-        // A box is still a whole copy when it covers all of the source's top level.
-        if (pSrcBox != nullptr)
-        {
-            ID3D11Texture2D *src_tex = nullptr;
-            if (pSrcResource == nullptr ||
-                FAILED(pSrcResource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void **>(&src_tex))) || src_tex == nullptr)
-                return;
-            D3D11_TEXTURE2D_DESC d = {};
-            src_tex->GetDesc(&d);
-            src_tex->Release();
-            if (pSrcBox->left != 0 || pSrcBox->top != 0 || pSrcBox->right != d.Width || pSrcBox->bottom != d.Height)
-                return;
-        }
+        // A whole copy: all of the source's top level, into a texture of exactly that size. A tile
+        // copied to the corner of a bigger texture (an atlas, a texture-array page) is not the
+        // same content, and tagging the atlas with the tile's hash would let a replacement made
+        // for the tile stand in for the whole atlas.
+        D3D11_TEXTURE2D_DESC src = {}, dst = {};
+        if (!texture2d_desc(pSrcResource, src) || !texture2d_desc(pDstResource, dst))
+            return;
+        if (dst.Width != src.Width || dst.Height != src.Height || !box_covers_top_level(pSrcBox, src.Width, src.Height))
+            return;
 
         s_copy_diag.copy_region_whole.fetch_add(1, std::memory_order_relaxed);
         if (TextureManager::get().copy_tag11(pSrcResource, pDstResource))
@@ -1125,31 +1163,17 @@ namespace TextureToolkit
             return;
 
         // Buffers (constant buffers above all) arrive here far more often than textures do.
-        D3D11_RESOURCE_DIMENSION dim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
-        pDstResource->GetType(&dim);
-        if (dim != D3D11_RESOURCE_DIMENSION_TEXTURE2D)
-            return;
-
-        ID3D11Texture2D *tex = nullptr;
-        if (FAILED(pDstResource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void **>(&tex))) || tex == nullptr)
-            return;
         D3D11_TEXTURE2D_DESC d = {};
-        tex->GetDesc(&d);
-        tex->Release();
-        if ((d.BindFlags & D3D11_BIND_SHADER_RESOURCE) == 0)
+        if (!texture2d_desc(pDstResource, d) || (d.BindFlags & D3D11_BIND_SHADER_RESOURCE) == 0)
             return;
 
         // A box that covers the whole top level is the same upload as no box. L.A. Noire passes one
-        // on every texture it fills, so a null box alone missed nearly everything it draws. Block-
-        // compressed formats may round the far edge up to the next multiple of 4.
-        const bool whole_box = pDstBox == nullptr ||
-                               (pDstBox->left == 0 && pDstBox->top == 0 && pDstBox->front == 0 && pDstBox->back <= 1 &&
-                                pDstBox->right >= d.Width && pDstBox->right <= ((d.Width + 3) & ~3u) &&
-                                pDstBox->bottom >= d.Height && pDstBox->bottom <= ((d.Height + 3) & ~3u));
-        if (DstSubresource != 0 || !whole_box)
+        // on every texture it fills, so a null box alone missed nearly everything it draws.
+        if (DstSubresource != 0 || !box_covers_top_level(pDstBox, d.Width, d.Height))
         {
             static std::atomic<int> s_logged{0};
-            if (DstSubresource == 0 && HookTimings::enabled() && s_logged.fetch_add(1, std::memory_order_relaxed) < 12)
+            if (DstSubresource == 0 && HookTimings::enabled() && s_logged.load(std::memory_order_relaxed) < 12 &&
+                s_logged.fetch_add(1, std::memory_order_relaxed) < 12)
                 Logger::get().debug("[Diag] Partial UpdateSubresource of a " + std::to_string(d.Width) + "x" + std::to_string(d.Height) +
                                     " texture (format " + std::to_string(d.Format) + "): box " + std::to_string(pDstBox->left) + "," +
                                     std::to_string(pDstBox->top) + " to " + std::to_string(pDstBox->right) + "," + std::to_string(pDstBox->bottom) + ".");
@@ -1161,7 +1185,10 @@ namespace TextureToolkit
         context->GetDevice(&device);
         if (device == nullptr)
             return;
-        TextureManager::get().register_unmap_texture11(device, pDstResource, pSrcData, d.Width, d.Height, d.Format, SrcRowPitch);
+        {
+            HookTimings::Scope timing(HookTimings::Site::D3D11Unmap);
+            TextureManager::get().register_unmap_texture11(device, pDstResource, pSrcData, d.Width, d.Height, d.Format, SrcRowPitch);
+        }
         device->Release();
     }
 
@@ -1182,16 +1209,12 @@ namespace TextureToolkit
             if (dim != D3D11_RESOURCE_DIMENSION_TEXTURE2D)
                 return hr;
 
-            static int s_logged_maps = 0;
-            if (s_logged_maps < 20)
-            {
-                s_logged_maps++;
+            static std::atomic<int> s_logged_maps{0};
+            if (s_logged_maps.load(std::memory_order_relaxed) < 20 && s_logged_maps.fetch_add(1, std::memory_order_relaxed) < 20)
                 Logger::get().debug("[D3D11Hook] Hooked_Map: resource=" + ptr_hex(pResource));
-            }
 
             MappedResourceData data;
             data.resource = pResource;
-            data.subresource = Subresource;
             data.mapped = *pMappedResource;
 
             pResource->AddRef(); // released on the matching Unmap, or when superseded below
@@ -1201,10 +1224,9 @@ namespace TextureToolkit
             ID3D11Resource *superseded = nullptr;
             {
                 std::lock_guard<std::mutex> lock(s_mapped_mutex);
-                auto existing = s_mapped_resources.find(pResource);
-                if (existing != s_mapped_resources.end())
-                    superseded = existing->second.resource;
-                s_mapped_resources[pResource] = data;
+                MappedResourceData &slot = s_mapped_resources[MapKey{ context, pResource }];
+                superseded = slot.resource;
+                slot = data;
             }
             if (superseded != nullptr)
                 superseded->Release();
@@ -1226,7 +1248,7 @@ namespace TextureToolkit
             MappedResourceData data;
             {
                 std::lock_guard<std::mutex> lock(s_mapped_mutex);
-                auto it = s_mapped_resources.find(pResource);
+                auto it = s_mapped_resources.find(MapKey{ context, pResource });
                 if (it != s_mapped_resources.end())
                 {
                     data = it->second;
@@ -1243,12 +1265,9 @@ namespace TextureToolkit
                     D3D11_TEXTURE2D_DESC desc = {};
                     tex->GetDesc(&desc);
 
-                    static int s_logged_unmaps = 0;
-                    if (s_logged_unmaps < 20)
-                    {
-                        s_logged_unmaps++;
+                    static std::atomic<int> s_logged_unmaps{0};
+                    if (s_logged_unmaps.load(std::memory_order_relaxed) < 20 && s_logged_unmaps.fetch_add(1, std::memory_order_relaxed) < 20)
                         Logger::get().debug("[D3D11Hook] Hooked_Unmap: Registering texture=" + ptr_hex(pResource));
-                    }
 
                     ID3D11Device *device = nullptr;
                     context->GetDevice(&device);

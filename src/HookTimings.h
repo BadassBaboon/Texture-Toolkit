@@ -13,7 +13,7 @@ namespace TextureToolkit::HookTimings
         D3D9Upload,     // hashing and tracking a texture the game filled through LockRect
         D3D9Bind,       // choosing a replacement in SetTexture
         D3D11Create,    // hashing and tracking a texture created with its pixels
-        D3D11Unmap,     // hashing and tracking a texture filled through Map/Unmap
+        D3D11Unmap,     // hashing and tracking a texture filled through Map/Unmap or UpdateSubresource
         D3D11Bind,      // choosing replacements in *SetShaderResources
         Overlay,        // per-frame bookkeeping and the panel, inside Present
         Count

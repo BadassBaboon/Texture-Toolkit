@@ -18,11 +18,6 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
   screen at any resolution (1440p 100%, 4K 150%, 1080p 75%), with text rasterised at the real
   pixel density rather than stretched, so it stays sharp. The Settings page can switch this off and
   set a size by hand, saved as `UIScale` in TextureToolkit.ini (`0` is automatic).
-- **Controllers no longer blocked while panel shown** Previous versions returned a zeroed out
-  input state for all input device.   This works for keyboard and mouse, but for controllers a zero
-  value for an analog often means hard left/up.  Changed to simply not block controllers - which
-  doesn't interfere with the panel and also allows the game to be played with controller while
-  the overlay is shown.
 
 ### Fixed
 - **Direct3D 11 games that draw through deferred contexts showed no textures in the scene, and
@@ -39,7 +34,9 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
   staging copy hashed, and a staging texture can never be bound. The Sims 4 does this for every
   texture: 211 were tracked and "Current scene only" listed none. The content tag now follows
   `CopyResource` and a whole top-level `CopySubresourceRegion` onto the texture that is drawn,
-  including the Direct3D 11.1 `CopySubresourceRegion1`, which is the one The Sims 4 uses.
+  including the Direct3D 11.1 `CopySubresourceRegion1`, which is the one The Sims 4 uses. A copy
+  only carries the tag into a texture of the same size, so an atlas built from tiles is never
+  mistaken for its first tile.
 - Textures written with `UpdateSubresource` or `UpdateSubresource1`, the other common Direct3D 11
   upload path, are tracked. A destination box that covers the whole texture counts as a full upload.
   L.A. Noire passes one on every texture, so its UI, fonts and world textures were never listed.
@@ -52,10 +49,15 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
   the original of the object it was made on.
 - The startup watchdog blamed OpenGL for a Direct3D 11 game that had created a device but not yet
   presented a frame through the hook. It now says that a device exists and names the likely causes.
+
 ### Changed
-- **"Skip small textures" now also hides 16x16 ones from the list.** Spec Ops: The Line has
-  hundreds of 16x16 placeholders that the old cut-off (under 16x16) let through. They are only
-  hidden: 16x16 textures are still tracked, and mods that replace one keep working.
+- **"Skip under 16 x 16" is now "Skip 16 x 16 and smaller".** Spec Ops: The Line has hundreds of
+  16x16 placeholders that the old cut-off let through. They are hidden from the list and left out
+  of Dump all, but still tracked, so mods that replace one keep working.
+- **Controllers are no longer blocked while the panel is open.** The game used to get an all-zero
+  input state from every DirectInput device, which is harmless for a keyboard or mouse, but on a
+  controller a zero axis often means hard left or up. Only the keyboard and mouse are blocked now,
+  so the game can still be played with a controller while the panel is open.
 
 ## [1.2.1] - 2026-10-05
 

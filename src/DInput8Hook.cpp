@@ -195,11 +195,23 @@ namespace TextureToolkit
         return hr;
     }
 
+    // Check if a device is keyboard or mouse
+    static bool is_keyboard_or_mouse(IDirectInputDevice8 *device)
+    {
+        DIDEVICEINSTANCE info = {};
+        info.dwSize = sizeof(info);
+        if (FAILED(device->GetDeviceInfo(&info)))
+            return true;
+
+        BYTE type = GET_DIDEVICE_TYPE(info.dwDevType);
+        return type == DI8DEVTYPE_KEYBOARD || type == DI8DEVTYPE_MOUSE;
+    }
+
     HRESULT STDMETHODCALLTYPE DInput8Hook::Hooked_GetDeviceState(IDirectInputDevice8 *pThis, DWORD cbData, LPVOID lpvData)
     {
         HRESULT hr = get().m_orig_get_device_state(pThis, cbData, lpvData);
 
-        if (SUCCEEDED(hr) && TextureToolkitUI::is_visible())
+        if (SUCCEEDED(hr) && TextureToolkitUI::is_visible() && is_keyboard_or_mouse(pThis))
         {
             // Block input to the game by clearing the buffer!
             if (lpvData != nullptr && cbData > 0)
@@ -215,7 +227,7 @@ namespace TextureToolkit
     {
         HRESULT hr = get().m_orig_get_device_data(pThis, cbObjectData, rgdod, pdwInOut, dwFlags);
 
-        if (SUCCEEDED(hr) && TextureToolkitUI::is_visible())
+        if (SUCCEEDED(hr) && TextureToolkitUI::is_visible() && is_keyboard_or_mouse(pThis))
         {
             // Block input by simulating zero events read
             if (pdwInOut != nullptr)

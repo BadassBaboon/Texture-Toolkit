@@ -49,6 +49,23 @@ rather than an implementation detail. See [Compatibility](README.md#compatibilit
   the original of the object it was made on.
 - The startup watchdog blamed OpenGL for a Direct3D 11 game that had created a device but not yet
   presented a frame through the hook. It now says that a device exists and names the likely causes.
+- **A Direct3D 9 tile mod could replace an entire texture atlas.** Surface copies now carry the
+  source hash only when they copy the whole top mip into a matching destination. This includes
+  explicit full-surface rectangles. A partial overwrite clears the destination's previous hash,
+  and a copy into a lower destination mip leaves its top-level identity alone.
+- **Direct3D 11 could keep showing old art after a game reused a texture.** The next shader bind
+  now picks up a full upload, even if the game first bound the view before uploading any pixels.
+  A partial top-level write or a copy from an untracked texture clears the stale match. On both
+  Direct3D 9 and 11, a texture identified as streaming also drops its last replacement match.
+- Turning **Replace textures** back on now refreshes Direct3D 11 views first bound while it was
+  off. Their replacements can appear on the next bind without a manual reload.
+- The Direct3D 11 overlay now restores every render target the game had bound, including targets
+  in non-adjacent slots. It also skips drawing when the game calls `Present` or `Present1` with
+  `DXGI_PRESENT_TEST` to check whether it can present a frame.
+- **Some valid large block-compressed DDS replacements failed to load.** The size check now
+  counts rows of compressed blocks. A 16,384 × 8,200 BC7 replacement passed on both x86 and x64.
+- The DDS reader checks that each mip's bytes are present before allocating its buffer, reports
+  invalid 24-bit RGB channel masks, and clears the previous image when a load starts.
 
 ### Changed
 - **"Skip under 16 x 16" is now "Skip 16 x 16 and smaller".** Spec Ops: The Line has hundreds of

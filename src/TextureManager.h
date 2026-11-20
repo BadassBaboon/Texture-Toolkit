@@ -88,7 +88,8 @@ namespace TextureToolkit
 
         // Settings
         bool auto_dump = false;
-        bool enable_injection = true;
+        bool injection_enabled() const { return m_enable_injection.load(std::memory_order_relaxed); }
+        void set_injection_enabled(bool enabled);
         bool filter_small_textures = true;
         bool show_current_frame_only = false;
         bool accept_sk_names = true;   // also resolve Special K-named files in inject/
@@ -193,6 +194,7 @@ namespace TextureToolkit
         // so without this every texture such a game uploads is tracked and never seen in a scene.
         // Returns whether the source carried a tag (for the copy diagnostics).
         bool copy_tag11(ID3D11Resource *src, ID3D11Resource *dst);
+        void clear_tag11(ID3D11Resource *resource);
         void log_untracked_bind11(ID3D11Resource *res);
 
         // The content hash tagged onto a resource, or 0 if it carries none. Lets the hook layer
@@ -262,6 +264,7 @@ namespace TextureToolkit
         // rescanned, a replacement was built, the preview selection moved, or a bulk dump was
         // queued. A cache entry from an older generation is simply ignored and rebuilt.
         std::atomic<uint32_t> m_bind_generation{1};
+        std::atomic<bool> m_enable_injection{true};
 
         // Hashes seen this frame, buffered per thread so the bind hook does not take the manager
         // lock for every bound texture; merged under the lock on flush and in on_frame.

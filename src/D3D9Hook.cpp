@@ -1111,7 +1111,15 @@ namespace TextureToolkit
         if (SUCCEEDED(hr) && !s_inside_injection)
         {
             log_texture_event("D3D9Hook", "UpdateTexture", pDestinationTexture, 0, 0);
-            TextureManager::get().copy_tag9(pSourceTexture, pDestinationTexture);
+            if (pSourceTexture->GetType() == D3DRTYPE_TEXTURE && pDestinationTexture->GetType() == D3DRTYPE_TEXTURE)
+            {
+                // UpdateTexture can start at a lower source mip when the destination is smaller.
+                D3DSURFACE_DESC src = {}, dst = {};
+                const bool same_top = SUCCEEDED(static_cast<IDirect3DTexture9 *>(pSourceTexture)->GetLevelDesc(0, &src)) &&
+                    SUCCEEDED(static_cast<IDirect3DTexture9 *>(pDestinationTexture)->GetLevelDesc(0, &dst)) &&
+                    src.Width == dst.Width && src.Height == dst.Height;
+                TextureManager::get().copy_tag9(same_top ? pSourceTexture : nullptr, pDestinationTexture);
+            }
         }
 
         return hr;
@@ -1292,24 +1300,44 @@ namespace TextureToolkit
                            " D3DX texture loader(s) in " + module_name + ".");
     }
 
-    // Carries the content tag from a staged surface to the surface actually rendered. Both of
-    // these copy pixels without any lock, which is how art can reach the GPU completely unseen.
-    static void carry_tag_between_surfaces(IDirect3DSurface9 *src, IDirect3DSurface9 *dst)
+    static bool is_top_surface(IDirect3DTexture9 *texture, const D3DSURFACE_DESC &surface)
+    {
+        D3DSURFACE_DESC top = {};
+        return SUCCEEDED(texture->GetLevelDesc(0, &top)) && top.Width == surface.Width && top.Height == surface.Height;
+    }
+
+    static bool covers_surface(const RECT *rect, const D3DSURFACE_DESC &surface)
+    {
+        return rect == nullptr || (rect->left == 0 && rect->top == 0 &&
+               rect->right == static_cast<LONG>(surface.Width) && rect->bottom == static_cast<LONG>(surface.Height));
+    }
+
+    static void carry_tag_between_surfaces(IDirect3DSurface9 *src, const RECT *src_rect,
+                                           IDirect3DSurface9 *dst, const RECT *dst_rect, bool at_origin)
     {
         if (src == nullptr || dst == nullptr)
             return;
 
-        IDirect3DTexture9 *src_tex = nullptr;
-        if (FAILED(src->GetContainer(__uuidof(IDirect3DTexture9), reinterpret_cast<void **>(&src_tex))) || src_tex == nullptr)
+        IDirect3DTexture9 *dst_tex = nullptr;
+        if (FAILED(dst->GetContainer(IID_PPV_ARGS(&dst_tex))))
             return;
 
-        IDirect3DTexture9 *dst_tex = nullptr;
-        if (SUCCEEDED(dst->GetContainer(__uuidof(IDirect3DTexture9), reinterpret_cast<void **>(&dst_tex))) && dst_tex != nullptr)
+        D3DSURFACE_DESC dst_desc = {}, src_desc = {};
+        if (SUCCEEDED(dst->GetDesc(&dst_desc)) && is_top_surface(dst_tex, dst_desc))
         {
-            TextureManager::get().copy_tag9(src_tex, dst_tex);
-            dst_tex->Release();
+            IDirect3DTexture9 *src_tex = nullptr;
+            if (at_origin && covers_surface(dst_rect, dst_desc) && SUCCEEDED(src->GetDesc(&src_desc)) &&
+                covers_surface(src_rect, src_desc) && src_desc.Width == dst_desc.Width &&
+                src_desc.Height == dst_desc.Height && src_desc.Format == dst_desc.Format)
+                src->GetContainer(IID_PPV_ARGS(&src_tex));
+
+            // A partial overwrite also retires any identity the destination already carried.
+            const bool from_top = src_tex != nullptr && is_top_surface(src_tex, src_desc);
+            TextureManager::get().copy_tag9(from_top ? src_tex : nullptr, dst_tex);
+            if (src_tex != nullptr)
+                src_tex->Release();
         }
-        src_tex->Release();
+        dst_tex->Release();
     }
 
     HRESULT STDMETHODCALLTYPE D3D9Hook::Hooked_UpdateSurface(IDirect3DDevice9 *device, IDirect3DSurface9 *pSourceSurface, const RECT *pSourceRect, IDirect3DSurface9 *pDestinationSurface, const POINT *pDestPoint)
@@ -1323,8 +1351,8 @@ namespace TextureToolkit
         {
             log_texture_event("D3D9Hook", (pSourceRect == nullptr) ? "UpdateSurface" : "UpdateSurface (sub-rect)",
                               pDestinationSurface, 0, 0);
-            if (pSourceRect == nullptr)
-                carry_tag_between_surfaces(pSourceSurface, pDestinationSurface);
+            const bool at_origin = pDestPoint == nullptr || (pDestPoint->x == 0 && pDestPoint->y == 0);
+            carry_tag_between_surfaces(pSourceSurface, pSourceRect, pDestinationSurface, nullptr, at_origin);
         }
 
         return hr;
@@ -1340,8 +1368,7 @@ namespace TextureToolkit
         {
             const bool whole = (pSourceRect == nullptr && pDestRect == nullptr);
             log_texture_event("D3D9Hook", whole ? "StretchRect" : "StretchRect (partial)", pDestSurface, 0, 0);
-            if (whole)
-                carry_tag_between_surfaces(pSourceSurface, pDestSurface);
+            carry_tag_between_surfaces(pSourceSurface, pSourceRect, pDestSurface, pDestRect, true);
         }
 
         return hr;

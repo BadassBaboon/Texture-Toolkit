@@ -725,10 +725,6 @@ namespace TextureToolkit
         D3D11_VIEWPORT old_viewports[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
         m_context->RSGetViewports(&num_viewports, old_viewports);
 
-        ID3D11RenderTargetView *old_rtv = nullptr;
-        ID3D11DepthStencilView *old_dsv = nullptr;
-        m_context->OMGetRenderTargets(1, &old_rtv, &old_dsv);
-
         ID3D11RenderTargetView *rtv = nullptr;
         ID3D11Texture2D *back_buffer = nullptr;
         if (SUCCEEDED(swapchain->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void **>(&back_buffer))) && back_buffer != nullptr)
@@ -760,18 +756,21 @@ namespace TextureToolkit
 
         if (rtv != nullptr)
         {
+            ID3D11RenderTargetView *old_rtvs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
+            ID3D11DepthStencilView *old_dsv = nullptr;
+            UINT count = D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT;
+            m_context->OMGetRenderTargets(count, old_rtvs, &old_dsv);
+            while (count > 0 && old_rtvs[count - 1] == nullptr)
+                --count;
+
             m_context->OMSetRenderTargets(1, &rtv, nullptr);
             { ScopedFlag own_draw(s_inside_injection); ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData()); }
             rtv->Release();
-        }
 
-        // Restore original render targets & viewports
-        m_context->OMSetRenderTargets(1, &old_rtv, old_dsv);
-        if (old_rtv != nullptr) old_rtv->Release();
-        if (old_dsv != nullptr) old_dsv->Release();
-
-        if (num_viewports > 0)
-        {
+            m_context->OMSetRenderTargets(count, old_rtvs, old_dsv);
+            for (auto *view : old_rtvs)
+                if (view != nullptr) view->Release();
+            if (old_dsv != nullptr) old_dsv->Release();
             m_context->RSSetViewports(num_viewports, old_viewports);
         }
     }
@@ -962,7 +961,7 @@ namespace TextureToolkit
         if (!s_said.exchange(true))
             Logger::get().info("[D3D11Hook] The game presents with IDXGISwapChain::Present.");
 
-        if (++t_present_depth == 1)
+        if (++t_present_depth == 1 && (Flags & DXGI_PRESENT_TEST) == 0)
             get().present_overlay(swapchain);
         const HRESULT hr = original(swapchain, SyncInterval, Flags);
         --t_present_depth;
@@ -980,7 +979,7 @@ namespace TextureToolkit
         if (!s_said.exchange(true))
             Logger::get().info("[D3D11Hook] The game presents with IDXGISwapChain1::Present1.");
 
-        if (++t_present_depth == 1)
+        if (++t_present_depth == 1 && (Flags & DXGI_PRESENT_TEST) == 0)
             get().present_overlay(swapchain);
         const HRESULT hr = original(swapchain, SyncInterval, Flags, pPresentParameters);
         --t_present_depth;
@@ -1109,10 +1108,15 @@ namespace TextureToolkit
         return true;
     }
 
+    static bool empty_box(const D3D11_BOX *box)
+    {
+        return box != nullptr && (box->left >= box->right || box->top >= box->bottom || box->front >= box->back);
+    }
+
     void D3D11Hook::carry_region_tag(ID3D11Resource *pDstResource, UINT DstSubresource, UINT DstX, UINT DstY, UINT DstZ,
                                      ID3D11Resource *pSrcResource, UINT SrcSubresource, const D3D11_BOX *pSrcBox)
     {
-        if (s_inside_injection || DstSubresource != 0 || SrcSubresource != 0 || DstX != 0 || DstY != 0 || DstZ != 0)
+        if (s_inside_injection || DstSubresource != 0 || empty_box(pSrcBox))
             return;
 
         // A whole copy: all of the source's top level, into a texture of exactly that size. A tile
@@ -1122,8 +1126,12 @@ namespace TextureToolkit
         D3D11_TEXTURE2D_DESC src = {}, dst = {};
         if (!texture2d_desc(pSrcResource, src) || !texture2d_desc(pDstResource, dst))
             return;
-        if (dst.Width != src.Width || dst.Height != src.Height || !box_covers_top_level(pSrcBox, src.Width, src.Height))
+        if (SrcSubresource != 0 || DstX != 0 || DstY != 0 || DstZ != 0 ||
+            dst.Width != src.Width || dst.Height != src.Height || !box_covers_top_level(pSrcBox, src.Width, src.Height))
+        {
+            TextureManager::get().clear_tag11(pDstResource);
             return;
+        }
 
         s_copy_diag.copy_region_whole.fetch_add(1, std::memory_order_relaxed);
         if (TextureManager::get().copy_tag11(pSrcResource, pDstResource))
@@ -1159,7 +1167,7 @@ namespace TextureToolkit
     void D3D11Hook::register_update(ID3D11DeviceContext *context, ID3D11Resource *pDstResource, UINT DstSubresource,
                                     const D3D11_BOX *pDstBox, const void *pSrcData, UINT SrcRowPitch)
     {
-        if (s_inside_injection || pSrcData == nullptr || pDstResource == nullptr)
+        if (s_inside_injection || pSrcData == nullptr || pDstResource == nullptr || DstSubresource != 0 || empty_box(pDstBox))
             return;
 
         // Buffers (constant buffers above all) arrive here far more often than textures do.
@@ -1169,10 +1177,11 @@ namespace TextureToolkit
 
         // A box that covers the whole top level is the same upload as no box. L.A. Noire passes one
         // on every texture it fills, so a null box alone missed nearly everything it draws.
-        if (DstSubresource != 0 || !box_covers_top_level(pDstBox, d.Width, d.Height))
+        if (!box_covers_top_level(pDstBox, d.Width, d.Height))
         {
+            TextureManager::get().clear_tag11(pDstResource);
             static std::atomic<int> s_logged{0};
-            if (DstSubresource == 0 && HookTimings::enabled() && s_logged.load(std::memory_order_relaxed) < 12 &&
+            if (HookTimings::enabled() && s_logged.load(std::memory_order_relaxed) < 12 &&
                 s_logged.fetch_add(1, std::memory_order_relaxed) < 12)
                 Logger::get().debug("[Diag] Partial UpdateSubresource of a " + std::to_string(d.Width) + "x" + std::to_string(d.Height) +
                                     " texture (format " + std::to_string(d.Format) + "): box " + std::to_string(pDstBox->left) + "," +

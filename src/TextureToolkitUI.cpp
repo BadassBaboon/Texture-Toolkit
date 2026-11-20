@@ -366,7 +366,7 @@ namespace TextureToolkit
     static void persist_settings(TextureManager &tm)
     {
         Configuration &cfg = ConfigManager::get().get_config();
-        cfg.enable_injection = tm.enable_injection;
+        cfg.enable_injection = tm.injection_enabled();
         cfg.auto_dump = tm.auto_dump;
         cfg.filter_small_textures = tm.filter_small_textures;
         cfg.show_current_frame_only = tm.show_current_frame_only;
@@ -1117,7 +1117,7 @@ namespace TextureToolkit
             const float right = CardRightEdge();
             const float controls_w = btn * 3.0f + gap * 2.0f + 14.0f + (m.is_base ? PillSize("Always on").x : sw.x);
             const ImVec2 start = ImGui::GetCursorScreenPos();
-            const bool live = m.is_base ? tm.enable_injection : m.enabled;
+            const bool live = m.is_base ? tm.injection_enabled() : m.enabled;
             const ImVec4 &fg = live ? pal().text : pal().text_faint;
 
             if (i != 0)
@@ -1219,7 +1219,7 @@ namespace TextureToolkit
             ImGui::SetCursorScreenPos(ImVec2(x, y + (ImGui::GetTextLineHeight() - sw.y) * 0.5f + 1.0f));
             if (m.is_base)
             {
-                Pill(tm.enable_injection ? "Always on" : "Off", tm.enable_injection ? pal().ok : pal().neutral);
+                Pill(tm.injection_enabled() ? "Always on" : "Off", tm.injection_enabled() ? pal().ok : pal().neutral);
                 ImGui::SetItemTooltip("TT/inject is switched with Replace textures above.");
             }
             else
@@ -1278,8 +1278,12 @@ namespace TextureToolkit
         BeginCard("inject", "Replacements",
                   "A .dds in TT/inject replaces the texture whose hash it is named after. Files added while the game runs are picked up on Reload.");
         {
-            if (ToggleRow("Replace textures", "Swap in a replacement wherever a matching file exists.", &tm.enable_injection))
+            bool replace = tm.injection_enabled();
+            if (ToggleRow("Replace textures", "Swap in a replacement wherever a matching file exists.", &replace))
+            {
+                tm.set_injection_enabled(replace);
                 persist_settings(tm);
+            }
             if (ToggleRow("Accept Special K names",
                           "Also load packs named the way Special K names them: eight hex digits, the CRC-32C of the top mip. These show as SK Injected. Switching it on applies to textures as they load, so restart the game for ones already loaded.",
                           &tm.accept_sk_names))
@@ -1507,7 +1511,7 @@ namespace TextureToolkit
             ++mods;
             mods_on += m.enabled ? 1 : 0;
         }
-        rows.push_back({ "Replacements", std::string("replace ") + on(tm.enable_injection) + ", Special K names " + on(tm.accept_sk_names) +
+        rows.push_back({ "Replacements", std::string("replace ") + on(tm.injection_enabled()) + ", Special K names " + on(tm.accept_sk_names) +
                                              "; " + std::to_string(inj.files_found) + " found, " + std::to_string(inj.applied) +
                                              " applied, " + std::to_string(inj.failed) + " failed" });
         rows.push_back({ "Mods", std::to_string(mods) + " installed, " + std::to_string(mods_on) + " on" });

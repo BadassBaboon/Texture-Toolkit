@@ -85,7 +85,7 @@ namespace TextureToolkit
         const char *version = "v" TT_VERSION_STRING;
         char state[96];
         std::snprintf(state, sizeof(state), "Replacements %s  \xC2\xB7  Auto-dump %s",
-                      TextureManager::get().enable_injection ? "on" : "off",
+                      TextureManager::get().injection_enabled() ? "on" : "off",
                       TextureManager::get().auto_dump ? "on" : "off");
 
         ImFont *strong = font_strong();

@@ -502,7 +502,7 @@ namespace TextureToolkit
         m_inject_dir = root / "inject";
 
         auto_dump = cfg.auto_dump;
-        enable_injection = cfg.enable_injection;
+        set_injection_enabled(cfg.enable_injection);
         filter_small_textures = cfg.filter_small_textures;
         show_current_frame_only = cfg.show_current_frame_only;
         accept_sk_names = cfg.accept_sk_names;
@@ -521,6 +521,13 @@ namespace TextureToolkit
         // Start background dump worker
         m_dump_thread_running = true;
         m_dump_thread = std::thread(&TextureManager::dump_worker_loop, this);
+    }
+
+    void TextureManager::set_injection_enabled(bool enabled)
+    {
+        // A view first bound while replacements were off has no cached replacement to re-enable.
+        if (m_enable_injection.exchange(enabled) != enabled)
+            m_bind_generation.fetch_add(1, std::memory_order_relaxed);
     }
 
     void TextureManager::shutdown()
@@ -587,7 +594,7 @@ namespace TextureToolkit
         std::lock_guard<std::mutex> lock(m_mutex);
         if (highlight_selected && hash == m_highlight_hash.load(std::memory_order_relaxed) && blink_phase_off())
             return magenta_stand_in9(orig);
-        if (!enable_injection || orig->GetType() != D3DRTYPE_TEXTURE)
+        if (!injection_enabled() || orig->GetType() != D3DRTYPE_TEXTURE)
             return orig;
         auto it = m_d3d9_replacements.find(hash);
         return (it != m_d3d9_replacements.end() && it->second != nullptr) ? it->second : orig;
@@ -1486,25 +1493,39 @@ namespace TextureToolkit
         return 0;
     }
 
+    static uint64_t tagged_hash11(ID3D11Resource *resource)
+    {
+        uint64_t hash = 0;
+        UINT size = sizeof(hash);
+        return SUCCEEDED(resource->GetPrivateData(TT_HASH_GUID, &size, &hash)) && size == sizeof(hash) ? hash : 0;
+    }
+
+    void TextureManager::clear_tag11(ID3D11Resource *resource)
+    {
+        if (resource != nullptr && tagged_hash11(resource) != 0 &&
+            SUCCEEDED(resource->SetPrivateData(TT_HASH_GUID, 0, nullptr)))
+            m_bind_generation.fetch_add(1, std::memory_order_relaxed);
+    }
+
     bool TextureManager::copy_tag11(ID3D11Resource *src, ID3D11Resource *dst)
     {
         if (src == nullptr || dst == nullptr || src == dst)
             return false;
 
-        uint64_t hash = 0;
-        UINT size = sizeof(hash);
-        if (FAILED(src->GetPrivateData(TT_HASH_GUID, &size, &hash)) || size != sizeof(hash) || hash == 0)
+        const uint64_t hash = tagged_hash11(src);
+        if (hash == 0)
+        {
+            clear_tag11(dst);
             return false;
+        }
 
         // Already carries this content: a game that copies the same staging texture again (or
         // re-copies after a reset) should not invalidate anything.
-        uint64_t existing = 0;
-        UINT existing_size = sizeof(existing);
-        if (SUCCEEDED(dst->GetPrivateData(TT_HASH_GUID, &existing_size, &existing)) &&
-            existing_size == sizeof(existing) && existing == hash)
+        if (tagged_hash11(dst) == hash)
             return true;
 
-        dst->SetPrivateData(TT_HASH_GUID, sizeof(hash), &hash);
+        if (FAILED(dst->SetPrivateData(TT_HASH_GUID, sizeof(hash), &hash)))
+            return false;
 
         // The record was made from the staging texture, so its D3D11 flags describe that. Describe
         // the texture that is actually drawn instead.
@@ -1535,13 +1556,14 @@ namespace TextureToolkit
 
     void TextureManager::copy_tag9(IDirect3DBaseTexture9 *src, IDirect3DBaseTexture9 *dst)
     {
-        if (src == nullptr || dst == nullptr)
+        if (dst == nullptr)
             return;
 
-        uint64_t hash = 0;
-        DWORD size = sizeof(hash);
-        if (SUCCEEDED(src->GetPrivateData(TT_HASH_GUID, &hash, &size)) && size == sizeof(hash))
+        const uint64_t hash = get_tagged_hash9(src);
+        if (hash != 0)
             dst->SetPrivateData(TT_HASH_GUID, &hash, sizeof(hash), 0);
+        else
+            dst->FreePrivateData(TT_HASH_GUID);
     }
 
     IDirect3DBaseTexture9 *TextureManager::get_replacement_texture9(IDirect3DBaseTexture9 *orig)
@@ -1584,7 +1606,7 @@ namespace TextureToolkit
 
         // Replacements are 2D textures. Never hand a cube or volume texture slot a 2D texture
         // (mirrors the view-dimension guard on the D3D11 side).
-        if (!enable_injection || orig->GetType() != D3DRTYPE_TEXTURE)
+        if (!injection_enabled() || orig->GetType() != D3DRTYPE_TEXTURE)
             return orig;
 
         auto it = m_d3d9_replacements.find(hash);
@@ -1612,7 +1634,7 @@ namespace TextureToolkit
     // inside the game's draw call, so it only records the hash. Caller MUST hold m_mutex.
     void TextureManager::note_pending_injection(uint64_t hash, bool is_dx11)
     {
-        if (!enable_injection)
+        if (!injection_enabled())
             return;
         if (m_failed_injections.find(hash) != m_failed_injections.end())
             return;
@@ -1838,7 +1860,10 @@ namespace TextureToolkit
         note_upload_change(stats, have_stats, hash, width, height);
         texture->SetPrivateData(TT_UPLOAD_STATS_GUID, &stats, sizeof(stats), 0);
         if (stats.streaming != 0)
+        {
+            texture->FreePrivateData(TT_HASH_GUID);
             return;
+        }
 
         // Only worth a second full pass over the pixels when an SK-named file could actually match.
         // A texture D3DX built from a file arrives with Special K's name for it already worked out.
@@ -1909,7 +1934,7 @@ namespace TextureToolkit
         // without the record the panel said "0 failed" while the texture sat at Pending for good.
         // Recording it also stops every re-upload of the texture from retrying a file already
         // known to be broken; Reload clears the list, so a fixed file is tried again.
-        if (enable_injection && !inject_path.empty() &&
+        if (injection_enabled() && !inject_path.empty() &&
             m_d3d9_replacements.find(hash) == m_d3d9_replacements.end() &&
             m_failed_injections.find(hash) == m_failed_injections.end())
         {
@@ -2133,9 +2158,7 @@ namespace TextureToolkit
             if (hidden_by_highlight(cache.hash))
                 return magenta_srv11(cache.stand_in);
 
-            // enable_injection is read live rather than cached, so the panel's checkbox takes
-            // effect immediately instead of waiting for a generation bump.
-            return (cache.replacement != nullptr && enable_injection) ? cache.replacement : orig;
+            return (cache.replacement != nullptr && injection_enabled()) ? cache.replacement : orig;
         }
 
         return resolve_srv11_slow(orig, generation, frame);
@@ -2243,7 +2266,7 @@ namespace TextureToolkit
         }
 
         ID3D11ShaderResourceView *result = orig;
-        if (enable_injection && replaceable_view)
+        if (injection_enabled() && replaceable_view)
         {
             auto it = m_d3d11_replacements.find(hash);
             if (it == m_d3d11_replacements.end())
@@ -2300,7 +2323,10 @@ namespace TextureToolkit
         note_upload_change(stats, have_stats, hash, width, height);
         resource->SetPrivateData(TT_UPLOAD_STATS_GUID, sizeof(stats), &stats);
         if (stats.streaming != 0)
+        {
+            clear_tag11(resource);
             return;
+        }
 
         // Only worth a second full pass over the pixels when an SK-named file could actually match.
         const uint32_t sk_hash = (accept_sk_names && m_have_sk_files.load(std::memory_order_relaxed))
@@ -2322,7 +2348,14 @@ namespace TextureToolkit
         std::lock_guard<std::mutex> lock(m_mutex);
 
         // Tag the original resource with its content hash (see get_replacement_srv11).
-        resource->SetPrivateData(TT_HASH_GUID, sizeof(hash), &hash);
+        // An existing view can cache both a previous hash and a miss before the first upload.
+        // A freshly created texture has no views yet, and staging textures cannot have any.
+        if (initial_levels != nullptr || tagged_hash11(resource) != hash)
+        {
+            const HRESULT tagged = resource->SetPrivateData(TT_HASH_GUID, sizeof(hash), &hash);
+            if (SUCCEEDED(tagged) && initial_levels == nullptr && (orig_desc.BindFlags & D3D11_BIND_SHADER_RESOURCE) != 0)
+                m_bind_generation.fetch_add(1, std::memory_order_relaxed);
+        }
 
         TextureDetails details;
         details.hash = hash;
@@ -2377,7 +2410,7 @@ namespace TextureToolkit
         std::filesystem::path inject_path = find_injection_path(hash, sk_hash, &via_sk_name);
         details.injected_via_sk_name = via_sk_name;
         // See the Direct3D 9 path: a failure here is recorded, and not retried on every re-upload.
-        if (enable_injection && !inject_path.empty() &&
+        if (injection_enabled() && !inject_path.empty() &&
             m_d3d11_replacements.find(hash) == m_d3d11_replacements.end() &&
             m_failed_injections.find(hash) == m_failed_injections.end())
         {

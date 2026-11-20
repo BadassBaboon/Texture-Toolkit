@@ -91,6 +91,7 @@ namespace TextureToolkit
 
     bool load_dds(const std::string &filepath, DDSImage &out_image)
     {
+        out_image = {};
         // std::vector throws on a length it cannot serve. This runs underneath a game's draw call,
         // where an escaping exception ends the process, so it stops here.
         try
@@ -237,17 +238,33 @@ namespace TextureToolkit
 
         // Byte offset of each channel within a source pixel, from the DDS masks. Defaults
         // to B,G,R order (D3DFMT_R8G8B8) when the masks are absent.
-        auto mask_byte = [](uint32_t m) -> int {
-            if (m & 0x000000FFu) return 0;
-            if (m & 0x0000FF00u) return 1;
-            if (m & 0x00FF0000u) return 2;
-            if (m & 0xFF000000u) return 3;
-            return -1;
-        };
-        int rb = mask_byte(header.ddspf.dwRBitMask);
-        int gb = mask_byte(header.ddspf.dwGBitMask);
-        int bb = mask_byte(header.ddspf.dwBBitMask);
-        if (rb < 0 || gb < 0 || bb < 0) { rb = 2; gb = 1; bb = 0; }
+        int rb = 2, gb = 1, bb = 0;
+        const auto &pf = header.ddspf;
+        if (expand_24 && (pf.dwRBitMask | pf.dwGBitMask | pf.dwBBitMask) != 0)
+        {
+            auto byte_index = [](uint32_t mask) {
+                switch (mask)
+                {
+                case 0x0000ff: return 0;
+                case 0x00ff00: return 1;
+                case 0xff0000: return 2;
+                default: return -1;
+                }
+            };
+            rb = byte_index(pf.dwRBitMask);
+            gb = byte_index(pf.dwGBitMask);
+            bb = byte_index(pf.dwBBitMask);
+            if (rb < 0 || gb < 0 || bb < 0 || rb == gb || rb == bb || gb == bb)
+            {
+                out_image.load_error = "unsupported channel masks for 24-bit RGB";
+                return false;
+            }
+        }
+
+        const auto payload_start = file.tellg();
+        file.seekg(0, std::ios::end);
+        std::streamoff remaining = file.tellg() - payload_start;
+        file.seekg(payload_start);
 
         uint32_t current_w = out_image.width;
         uint32_t current_h = out_image.height;
@@ -257,18 +274,10 @@ namespace TextureToolkit
         // used. out_image.array_size still reports what the file holds.
         for (uint32_t mip = 0; mip < out_image.mip_levels; ++mip)
         {
-            uint32_t row_pitch = reshade::api::format_row_pitch(fmt, current_w);
-            uint32_t slice_pitch = reshade::api::format_slice_pitch(fmt, row_pitch, current_h);
-
-            if (slice_pitch == 0)
-                slice_pitch = row_pitch * current_h;
-
-            // format_row_pitch multiplies in 32 bits, so an extreme width can wrap to a small or
-            // zero pitch. Recomputing in 64 bits catches that, and catches a level whose size is
-            // simply not credible, before either becomes an allocation.
-            const uint64_t checked_slice =
-                static_cast<uint64_t>(reshade::api::format_row_pitch(fmt, current_w)) * current_h;
-            if (row_pitch == 0 || slice_pitch == 0 || checked_slice > kMaxSubresourceBytes)
+            const uint32_t row_pitch = reshade::api::format_row_pitch(fmt, current_w);
+            const uint32_t rows = reshade::api::format_slice_pitch(fmt, 1, current_h);
+            const uint64_t checked_slice = static_cast<uint64_t>(row_pitch) * rows;
+            if (checked_slice == 0 || checked_slice > kMaxSubresourceBytes)
             {
                 if (mip == 0)
                     out_image.load_error = "implausible mip 0 size for " + std::to_string(current_w) +
@@ -277,15 +286,36 @@ namespace TextureToolkit
                 break;
             }
 
-            std::vector<uint8_t> buffer(slice_pitch);
+            const uint32_t slice_pitch = static_cast<uint32_t>(checked_slice);
+            const uint32_t input_bytes = expand_24 ? current_w * 3 * current_h : slice_pitch;
+            std::vector<uint8_t> buffer;
+            if (remaining >= input_bytes)
+            {
+                buffer.resize(input_bytes);
+                file.read(reinterpret_cast<char *>(buffer.data()), input_bytes);
+            }
+            if (remaining < input_bytes || file.gcount() != input_bytes)
+            {
+                if (mip == 0)
+                {
+                    const auto received = remaining < input_bytes ? remaining : file.gcount();
+                    char fourcc[16];
+                    std::snprintf(fourcc, sizeof(fourcc), "0x%08X", static_cast<unsigned>(pf.dwFourCC));
+                    out_image.load_error = "mip 0 short read: expected " + std::to_string(input_bytes) +
+                                           " bytes, got " + std::to_string(received) +
+                                           " (" + std::to_string(current_w) + "x" + std::to_string(current_h) +
+                                           ", format " + std::to_string(static_cast<uint32_t>(fmt)) +
+                                           ", fourcc " + fourcc + ", bitcount " + std::to_string(pf.dwRGBBitCount) + ")";
+                }
+                break;
+            }
+            remaining -= input_bytes;
 
             if (expand_24)
             {
                 const uint32_t src_row = current_w * 3;
-                std::vector<uint8_t> src(static_cast<size_t>(src_row) * current_h);
-                file.read(reinterpret_cast<char *>(src.data()), src.size());
-                if (file.gcount() < static_cast<std::streamsize>(src.size()))
-                    break;
+                const std::vector<uint8_t> src = std::move(buffer);
+                buffer.resize(slice_pitch);
 
                 for (uint32_t y = 0; y < current_h; ++y)
                 {
@@ -298,28 +328,6 @@ namespace TextureToolkit
                         d[2] = s[bb];
                         d[3] = 255;
                     }
-                }
-            }
-            else
-            {
-                file.read(reinterpret_cast<char *>(buffer.data()), slice_pitch);
-                if (file.gcount() < static_cast<std::streamsize>(slice_pitch))
-                {
-                    // Short read. On mip 0 this means the file does not match its own header (a
-                    // format we mapped wrongly, or truncated data) and the load fails outright, so
-                    // record what we expected: the numbers identify which of the two it was.
-                    if (mip == 0)
-                    {
-                        char fourcc[16];
-                        std::snprintf(fourcc, sizeof(fourcc), "0x%08X", static_cast<unsigned>(header.ddspf.dwFourCC));
-                        out_image.load_error = "mip 0 short read: expected " + std::to_string(slice_pitch) +
-                                               " bytes, got " + std::to_string(static_cast<long long>(file.gcount())) +
-                                               " (" + std::to_string(out_image.width) + "x" + std::to_string(out_image.height) +
-                                               ", format " + std::to_string(static_cast<uint32_t>(fmt)) +
-                                               ", fourcc " + fourcc +
-                                               ", bitcount " + std::to_string(header.ddspf.dwRGBBitCount) + ")";
-                    }
-                    break;
                 }
             }
 
